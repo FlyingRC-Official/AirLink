@@ -1,0 +1,38 @@
+name: firmware-ci
+on: [push, pull_request]
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/run_host_tests.sh
+      - run: tests/check_web.sh
+      - run: python3 -m py_compile tools/airlink_factory.py
+  esp-idf:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant: [release, recovery, factory-test]
+    container: espressif/idf:v6.0.2
+    steps:
+      - uses: actions/checkout@v4
+      - run: idf.py set-target esp32c5
+      - run: idf.py -B build-${{ matrix.variant }} -D SDKCONFIG=build-${{ matrix.variant }}/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.${{ matrix.variant }}" build
+      - if: matrix.variant == 'release'
+        run: |
+          package=$(tools/create_release.sh build-release ci)
+          python3 - "$package" <<'PY'
+          import pathlib, shlex, sys
+          root = pathlib.Path(sys.argv[1])
+          lines = (root / "flash_args").read_text().splitlines()[1:]
+          missing = [tokens[1] for line in lines if len(tokens := shlex.split(line)) == 2 and not (root / tokens[1]).is_file()]
+          if missing:
+              raise SystemExit(f"release flash_args references missing files: {missing}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airlink-${{ matrix.variant }}
+          path: |
+            build-${{ matrix.variant }}/airlink.bin
+            build-${{ matrix.variant }}/bootloader/bootloader.bin
+            build-${{ matrix.variant }}/partition_table/partition-table.bin
