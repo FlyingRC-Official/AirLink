@@ -15,7 +15,10 @@ static size_t mav1(uint8_t *out, uint8_t msgid, const uint8_t *payload, size_t p
 {
     out[0]=0xfe; out[1]=(uint8_t)payload_len; out[2]=1; out[3]=1; out[4]=1; out[5]=msgid;
     memcpy(out+6,payload,payload_len); uint16_t crc=0xffff;
-    for(size_t i=1;i<6+payload_len;i++)crc_accumulate(out[i],&crc);crc_accumulate(extra,&crc);
+    for(size_t i=1;i<6+payload_len;i++) {
+        crc_accumulate(out[i],&crc);
+    }
+    crc_accumulate(extra,&crc);
     out[6+payload_len]=(uint8_t)crc;out[7+payload_len]=(uint8_t)(crc>>8);return payload_len+8;
 }
 
