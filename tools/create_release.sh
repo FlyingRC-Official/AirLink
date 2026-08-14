@@ -8,13 +8,25 @@ mkdir -p "$dist"
 cp "$build/airlink.bin" "$build/bootloader/bootloader.bin" "$build/partition_table/partition-table.bin" "$dist/"
 cp "$build/ota_data_initial.bin" "$build/flash_args" "$dist/"
 if command -v esptool >/dev/null 2>&1; then
-    esptool --chip esp32c5 merge-bin -o "$dist/airlink-${version}-merged.bin" --flash-mode dio --flash-size 8MB \
+    if esptool --help 2>&1 | grep -q 'merge-bin'; then
+        merge_command=merge-bin; flash_mode_option=--flash-mode; flash_size_option=--flash-size
+    else
+        merge_command=merge_bin; flash_mode_option=--flash_mode; flash_size_option=--flash_size
+    fi
+    esptool --chip esp32c5 "$merge_command" -o "$dist/airlink-${version}-merged.bin" \
+        "$flash_mode_option" dio "$flash_size_option" 8MB \
         0x2000 "$build/bootloader/bootloader.bin" 0x8000 "$build/partition_table/partition-table.bin" \
-        0x19000 "$build/ota_data_initial.bin" 0x30000 "$build/airlink.bin"
+        0x19000 "$build/ota_data_initial.bin" 0x30000 "$build/airlink.bin" >&2
 else
-    python3 -m esptool --chip esp32c5 merge-bin -o "$dist/airlink-${version}-merged.bin" --flash-mode dio --flash-size 8MB \
+    if python3 -m esptool --help 2>&1 | grep -q 'merge-bin'; then
+        merge_command=merge-bin; flash_mode_option=--flash-mode; flash_size_option=--flash-size
+    else
+        merge_command=merge_bin; flash_mode_option=--flash_mode; flash_size_option=--flash_size
+    fi
+    python3 -m esptool --chip esp32c5 "$merge_command" -o "$dist/airlink-${version}-merged.bin" \
+        "$flash_mode_option" dio "$flash_size_option" 8MB \
         0x2000 "$build/bootloader/bootloader.bin" 0x8000 "$build/partition_table/partition-table.bin" \
-        0x19000 "$build/ota_data_initial.bin" 0x30000 "$build/airlink.bin"
+        0x19000 "$build/ota_data_initial.bin" 0x30000 "$build/airlink.bin" >&2
 fi
 python3 - "$dist" "$version" <<'PY'
 import hashlib,json,sys
