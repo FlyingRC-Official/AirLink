@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-dev
+## 0.1.0-dev - 2026-08-14
 
 - Initial ESP32-C5-WROOM-1U-N8R8 firmware structure.
 - MAVLink-aware and transparent UART routing to Wi-Fi UDP/TCP and optional USB.
@@ -12,3 +12,5 @@
 - AP+STA telemetry is isolated to the private AirLink AP; STA-only telemetry is
   intended for trusted, isolated networks.
 - BLE and Mesh operational transports remain disabled for this release.
+- This is a development prerelease for controlled hardware and bench validation;
+  physical-board, RF, endurance and flight acceptance remain pending.
