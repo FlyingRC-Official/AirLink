@@ -212,6 +212,8 @@ assert.ok(batch.indexOf("Microsoft\\Edge") < batch.indexOf("Google\\Chrome"));
 const command = await readFile(join(root, "start_flasher.command"), "utf8");
 assert.doesNotMatch(command, /python|http\.server|localhost/i);
 assert.ok(command.indexOf("Google Chrome") < command.indexOf("Microsoft Edge"));
-assert.ok((await stat(join(root, "start_flasher.command"))).mode & 0o111, "macOS launcher must be executable");
+if (process.platform !== "win32") {
+  assert.ok((await stat(join(root, "start_flasher.command"))).mode & 0o111, "macOS launcher must be executable");
+}
 
 console.log("AirLink cross-platform USB flasher validation passed");
