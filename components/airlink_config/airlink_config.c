@@ -5,10 +5,14 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include "airlink_provision.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_partition.h"
 #include "esp_random.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -32,6 +36,7 @@ static const char *TAG = "config";
 static const char *NVS_NAMESPACE = "airlink";
 static airlink_config_t s_config;
 static uint32_t s_generation;
+static SemaphoreHandle_t s_config_lock;
 
 static bool baud_valid(uint32_t baud)
 {
@@ -58,6 +63,16 @@ static bool serial_valid(const char *serial)
         if (!isalnum(c) && c != '-' && c != '_' && c != '.') return false;
     }
     return true;
+}
+
+static bool identity_password_valid(const char *password, size_t length)
+{
+    if (password == NULL || length < 12U || length > 63U) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const unsigned char c = (unsigned char)password[i];
+        if (c < 0x21U || c > 0x7eU) return false;
+    }
+    return password[length] == '\0';
 }
 
 bool airlink_config_validate(const airlink_config_t *config)
@@ -95,9 +110,13 @@ static bool read_identity(factory_identity_t *identity)
     size_t length = sizeof(*identity);
     const esp_err_t err = nvs_get_blob(nvs, "identity", identity, &length);
     nvs_close(nvs);
-    return err == ESP_OK && length == sizeof(*identity) && identity->magic == IDENTITY_MAGIC &&
-           identity->crc32 == identity_crc(identity) && identity->serial_number[0] != '\0' &&
-           strnlen(identity->initial_password, sizeof(identity->initial_password)) >= 12;
+    if (err != ESP_OK || length != sizeof(*identity) || identity->magic != IDENTITY_MAGIC ||
+        identity->crc32 != identity_crc(identity)) return false;
+    const size_t serial_length = strnlen(identity->serial_number, sizeof(identity->serial_number));
+    const size_t password_length = strnlen(identity->initial_password, sizeof(identity->initial_password));
+    return serial_length > 0 && serial_length < sizeof(identity->serial_number) &&
+           identity_password_valid(identity->initial_password, password_length) &&
+           serial_valid(identity->serial_number);
 }
 
 static esp_err_t write_identity(const char *serial, const char *password)
@@ -196,6 +215,35 @@ static esp_err_t write_record(const airlink_config_t *config, uint32_t generatio
     return err;
 }
 
+static bool provisioning_record_read(airlink_provision_record_t *record)
+{
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, AIRLINK_PROVISION_PARTITION_LABEL);
+    if (partition == NULL || partition->size < sizeof(*record) ||
+        esp_partition_read(partition, 0, record, sizeof(*record)) != ESP_OK) return false;
+    const uint8_t *bytes = (const uint8_t *)record;
+    for (size_t i = 0; i < sizeof(*record); ++i) if (bytes[i] != 0xffU) return true;
+    return false;
+}
+
+static void provisioning_record_erase(void)
+{
+    const esp_partition_t *partition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, AIRLINK_PROVISION_PARTITION_LABEL);
+    if (partition == NULL) return;
+    const esp_err_t err = esp_partition_erase_range(partition, 0, partition->size);
+    if (err != ESP_OK) ESP_LOGW(TAG, "could not erase provisioning record: %s", esp_err_to_name(err));
+}
+
+static esp_err_t save_locked(const airlink_config_t *config)
+{
+    const uint32_t generation = s_generation + 1U;
+    ESP_RETURN_ON_ERROR(write_record(config, generation), TAG, "write configuration");
+    s_config = *config;
+    s_generation = generation;
+    return ESP_OK;
+}
+
 esp_err_t airlink_config_init(airlink_config_snapshot_t *snapshot)
 {
     esp_err_t ret = nvs_flash_init();
@@ -206,9 +254,15 @@ esp_err_t airlink_config_init(airlink_config_snapshot_t *snapshot)
     ESP_RETURN_ON_ERROR(ret, TAG, "NVS init");
     ret = nvs_flash_init_partition("identity");
     ESP_RETURN_ON_ERROR(ret, TAG, "identity NVS init");
+    s_config_lock = xSemaphoreCreateMutex();
+    if (s_config_lock == NULL) return ESP_ERR_NO_MEM;
 
     nvs_handle_t nvs;
-    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs), TAG, "open NVS");
+    /* A freshly erased NVS partition has no namespace yet. Opening it read-only
+     * returns ESP_ERR_NVS_NOT_FOUND and used to make first boot reset forever.
+     * Read-write mode creates the namespace; the missing A/B records below then
+     * correctly fall through to the generated defaults. */
+    ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG, "open NVS");
     config_record_t a = {0}, b = {0};
     bool a_valid = false, b_valid = false;
     ESP_GOTO_ON_ERROR(read_slot(nvs, "config_a", &a, &a_valid), out, TAG, "read slot A");
@@ -217,6 +271,10 @@ out:
     nvs_close(nvs);
     ESP_RETURN_ON_ERROR(ret, TAG, "load configuration");
 
+    airlink_provision_record_t provision = {0};
+    const bool provision_present = provisioning_record_read(&provision);
+    factory_identity_t identity;
+    const bool identity_present = read_identity(&identity);
     bool defaults = false;
     if (a_valid || b_valid) {
         const config_record_t *selected = !b_valid || (a_valid && a.generation >= b.generation) ? &a : &b;
@@ -226,7 +284,34 @@ out:
         load_defaults(&s_config);
         s_generation = 1;
         defaults = true;
+    }
+    bool credentials_changed = false;
+    if (identity_present) {
+        credentials_changed = strcmp(s_config.serial_number, identity.serial_number) != 0 ||
+                              strcmp(s_config.ap_password, identity.initial_password) != 0 ||
+                              strcmp(s_config.admin_password, identity.initial_password) != 0;
+        strlcpy(s_config.serial_number, identity.serial_number, sizeof(s_config.serial_number));
+        strlcpy(s_config.ap_password, identity.initial_password, sizeof(s_config.ap_password));
+        strlcpy(s_config.admin_password, identity.initial_password, sizeof(s_config.admin_password));
+    }
+    if (provision_present) {
+        if (airlink_provision_record_valid(&provision) && !identity_present) {
+            credentials_changed = strcmp(s_config.ap_password, provision.password) != 0 ||
+                                  strcmp(s_config.admin_password, provision.password) != 0;
+            strlcpy(s_config.ap_password, provision.password, sizeof(s_config.ap_password));
+            strlcpy(s_config.admin_password, provision.password, sizeof(s_config.admin_password));
+            ESP_LOGI(TAG, "applied one-time USB provisioning password");
+        } else if (identity_present) {
+            ESP_LOGW(TAG, "factory identity present; preserving factory credentials");
+        } else {
+            ESP_LOGW(TAG, "invalid USB provisioning record ignored");
+        }
+        provisioning_record_erase();
+    }
+    if (defaults) {
         ESP_RETURN_ON_ERROR(write_record(&s_config, s_generation), TAG, "store defaults");
+    } else if (credentials_changed) {
+        ESP_RETURN_ON_ERROR(save_locked(&s_config), TAG, "store provisioned credentials");
     }
     if (snapshot != NULL) {
         *snapshot = (airlink_config_snapshot_t){s_config, s_generation, defaults};
@@ -235,41 +320,64 @@ out:
     return ESP_OK;
 }
 
-const airlink_config_t *airlink_config_get(void) { return &s_config; }
-uint32_t airlink_config_generation(void) { return s_generation; }
+void airlink_config_get(airlink_config_t *config)
+{
+    if (config == NULL) return;
+    xSemaphoreTake(s_config_lock, portMAX_DELAY);
+    *config = s_config;
+    xSemaphoreGive(s_config_lock);
+}
+
+uint32_t airlink_config_generation(void)
+{
+    xSemaphoreTake(s_config_lock, portMAX_DELAY);
+    const uint32_t generation = s_generation;
+    xSemaphoreGive(s_config_lock);
+    return generation;
+}
 
 esp_err_t airlink_config_save(const airlink_config_t *config)
 {
     if (!airlink_config_validate(config)) return ESP_ERR_INVALID_ARG;
-    const uint32_t generation = s_generation + 1U;
-    ESP_RETURN_ON_ERROR(write_record(config, generation), TAG, "write configuration");
-    s_config = *config;
-    s_generation = generation;
-    return ESP_OK;
+    xSemaphoreTake(s_config_lock, portMAX_DELAY);
+    const esp_err_t err = save_locked(config);
+    xSemaphoreGive(s_config_lock);
+    return err;
 }
 
 esp_err_t airlink_config_factory_reset(void)
 {
+    xSemaphoreTake(s_config_lock, portMAX_DELAY);
     airlink_config_t defaults;
     load_defaults(&defaults);
-    return airlink_config_save(&defaults);
+    const esp_err_t err = save_locked(&defaults);
+    xSemaphoreGive(s_config_lock);
+    return err;
 }
 
 esp_err_t airlink_config_set_identity(const char *serial, const char *password)
 {
-    if (!serial_valid(serial) || password == NULL ||
-        strlen(password) < 12 || strlen(password) > 63) {
+    const size_t password_length = password == NULL ? 0 : strnlen(password, AIRLINK_PASSWORD_MAX + 1U);
+    if (!serial_valid(serial) || !identity_password_valid(password, password_length)) {
         return ESP_ERR_INVALID_ARG;
     }
+    xSemaphoreTake(s_config_lock, portMAX_DELAY);
     factory_identity_t existing;
     if (read_identity(&existing) &&
         (strcmp(existing.serial_number, serial) != 0 || strcmp(existing.initial_password, password) != 0)) {
+        xSemaphoreGive(s_config_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    ESP_RETURN_ON_ERROR(write_identity(serial, password), TAG, "store factory identity");
+    const esp_err_t identity_err = write_identity(serial, password);
+    if (identity_err != ESP_OK) {
+        xSemaphoreGive(s_config_lock);
+        return identity_err;
+    }
     airlink_config_t updated = s_config;
     strlcpy(updated.serial_number, serial, sizeof(updated.serial_number));
     strlcpy(updated.ap_password, password, sizeof(updated.ap_password));
     strlcpy(updated.admin_password, password, sizeof(updated.admin_password));
-    return airlink_config_save(&updated);
+    const esp_err_t err = save_locked(&updated);
+    xSemaphoreGive(s_config_lock);
+    return err;
 }

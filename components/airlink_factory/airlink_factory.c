@@ -31,6 +31,7 @@ static void reply(const char *format, ...)
 static void info_command(void)
 {
     airlink_can_status_t can; airlink_can_get_status(&can);
+    airlink_config_t config; airlink_config_get(&config);
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
     reply("{\"ok\":true,\"test\":\"info\",\"chip\":%s,\"flash_bytes\":%" PRIu32
@@ -39,7 +40,7 @@ static void info_command(void)
           "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\",\"ble_advertising\":%s}\r\n",
           s_probe.chip_ok ? "true" : "false", s_probe.flash_bytes, s_probe.psram_bytes,
           airlink_usb_connected() ? "true" : "false", airlink_board_boot_pressed() ? "true" : "false",
-          can.rx_frames, can.tx_frames, airlink_config_get()->serial_number,
+          can.rx_frames, can.tx_frames, config.serial_number,
           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
           airlink_factory_ble_advertising() ? "true" : "false");
 }
@@ -70,7 +71,8 @@ static void cli_handler(const char *line)
     if (strcmp(command, "info") == 0) {
         info_command();
     } else if (strcmp(command, "nvs") == 0) {
-        const esp_err_t err = airlink_config_save(airlink_config_get());
+        airlink_config_t config; airlink_config_get(&config);
+        const esp_err_t err = airlink_config_save(&config);
         reply("{\"ok\":%s,\"test\":\"nvs\",\"generation\":%" PRIu32 "}\r\n",
               err == ESP_OK ? "true" : "false", airlink_config_generation());
     } else if (strcmp(command, "wifi-scan") == 0) {

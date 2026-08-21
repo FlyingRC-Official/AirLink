@@ -38,7 +38,7 @@ typedef struct {
 } airlink_config_snapshot_t;
 
 esp_err_t airlink_config_init(airlink_config_snapshot_t *snapshot);
-const airlink_config_t *airlink_config_get(void);
+void airlink_config_get(airlink_config_t *config);
 uint32_t airlink_config_generation(void);
 esp_err_t airlink_config_save(const airlink_config_t *config);
 esp_err_t airlink_config_factory_reset(void);

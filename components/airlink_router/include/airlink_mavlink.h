@@ -23,9 +23,13 @@ typedef struct {
     bool crc_known;
     bool crc_valid;
     bool high_priority;
+    bool heartbeat_valid;
     bool heartbeat_armed;
+    uint8_t heartbeat_type;
+    uint8_t heartbeat_autopilot;
 } airlink_mavlink_frame_t;
 
 void airlink_mavlink_parser_reset(airlink_mavlink_parser_t *parser);
 bool airlink_mavlink_parse_byte(airlink_mavlink_parser_t *parser, uint8_t byte,
                                 airlink_mavlink_frame_t *frame);
+bool airlink_mavlink_heartbeat_is_autopilot(const airlink_mavlink_frame_t *frame);

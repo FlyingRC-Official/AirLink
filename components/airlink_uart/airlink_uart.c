@@ -19,6 +19,7 @@
 #define UART_EVENT_DEPTH 24
 #define HIGH_QUEUE_DEPTH 32
 #define NORMAL_QUEUE_DEPTH 64
+#define HIGH_BURST_LIMIT 8U
 
 typedef struct {
     uint16_t length;
@@ -60,10 +61,22 @@ static void uart_tx_task(void *argument)
     (void)argument;
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     uart_packet_t packet;
+    unsigned high_burst = 0;
     while (true) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
-        if (xQueueReceive(s_high_queue, &packet, 0) != pdTRUE &&
-            xQueueReceive(s_normal_queue, &packet, pdMS_TO_TICKS(10)) != pdTRUE) continue;
+        bool received = false;
+        if (high_burst >= HIGH_BURST_LIMIT &&
+            xQueueReceive(s_normal_queue, &packet, 0) == pdTRUE) {
+            high_burst = 0;
+            received = true;
+        } else if (xQueueReceive(s_high_queue, &packet, 0) == pdTRUE) {
+            high_burst++;
+            received = true;
+        } else if (xQueueReceive(s_normal_queue, &packet, pdMS_TO_TICKS(10)) == pdTRUE) {
+            high_burst = 0;
+            received = true;
+        }
+        if (!received) continue;
         const int written = uart_write_bytes(FC_UART, packet.data, packet.length);
         if (written != packet.length) ESP_LOGW(TAG, "short UART write %d/%u", written, packet.length);
     }

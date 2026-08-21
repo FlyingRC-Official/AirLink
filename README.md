@@ -36,7 +36,8 @@ flowchart LR
   inspection, CAN diagnostics, reboot, factory reset and OTA.
 - Stores configuration in CRC-protected, generation-numbered NVS A/B records.
   The factory serial number and initial password use a separate identity
-  partition.
+  partition. Blank devices can consume a CRC-protected one-time password record
+  written by the Windows flasher; the record is erased after first use.
 - Passively monitors DroneCAN `NodeStatus`, TWAI error counters and bus-off
   recovery. CAN transmission and bitrate switching are enabled only in the
   factory-test build.
@@ -67,7 +68,8 @@ per-board administrator password.
 - Module: `ESP32-C5-WROOM-1U-N8R8` (8 MB flash, 8 MB PSRAM)
 - ESP-IDF: exactly 6.0.2 for the first qualified release
 - Hardware ID: `airlink-c5-mesh-v1`
-- Default AP: `FlyingRC-AirLink-XXXX`, `192.168.4.1`
+- Default AP: `FlyingRC-AirLink-XXXX`, `192.168.4.1`; password is generated per
+  device and must be saved by factory test or the Windows flasher
 - MAVLink: UDP 14550, TCP 5760
 
 In AP+STA mode telemetry sockets listen only on the private AirLink AP address;
@@ -103,7 +105,8 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ## Operation
 
-1. Connect to the AP using the per-board password printed by factory test.
+1. Connect to the AP using the per-board password recorded by factory test or
+   downloaded from the Windows flasher.
 2. Open <http://192.168.4.1> and sign in as `admin` with the same password.
 3. Configure the flight controller UART for MAVLink at the selected baud rate.
 4. QGroundControl normally discovers UDP 14550. Mission Planner can use UDP
@@ -168,7 +171,7 @@ must pass [factory testing](docs/FACTORY_TEST.md) before powered flight tests.
 
 ## Security
 
-This development release validates ESP image format and SHA-256 during OTA but
+This development release validates ESP image format, target marker and SHA-256 during OTA but
 does not authenticate the publisher. Secure Boot, flash encryption and
 irreversible security eFuses are intentionally disabled on the 18 samples.
 

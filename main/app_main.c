@@ -27,6 +27,7 @@ static void status_task(void *argument)
     while (true) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         airlink_wifi_status_t wifi; airlink_wifi_get_status(&wifi);
+        airlink_ota_health_heartbeat(true);
         if (airlink_ota_in_progress()) airlink_led_set(AIRLINK_LED_OTA);
         else if (airlink_router_fc_seen()) airlink_led_set(AIRLINK_LED_MAVLINK);
         else if (wifi.ap_started || wifi.sta_connected) airlink_led_set(AIRLINK_LED_NO_FC);
@@ -37,6 +38,7 @@ static void status_task(void *argument)
 
 void app_main(void)
 {
+    ESP_LOGI(TAG, "image target: %s", airlink_image_hardware_marker());
 #if CONFIG_AIRLINK_BUILD_FACTORY_TEST
     const bool factory_test = true;
 #else
@@ -53,7 +55,8 @@ void app_main(void)
 
     const bool hardware_ok = board.chip_ok && board.flash_ok && board.psram_ok;
     const bool recovery = !hardware_ok || board.recovery_requested;
-    const airlink_usb_mode_t usb_mode = recovery ? AIRLINK_USB_LOG_CLI : snapshot.value.usb_mode;
+    const airlink_usb_mode_t usb_mode = (recovery || factory_test) ?
+                                        AIRLINK_USB_LOG_CLI : snapshot.value.usb_mode;
     ESP_ERROR_CHECK(airlink_usb_start(usb_mode));
 
     /* Recovery keeps only USB LOG_CLI, Wi-Fi configuration access and the web

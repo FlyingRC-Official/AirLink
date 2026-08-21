@@ -7,6 +7,8 @@
 
 #define AIRLINK_PRODUCT_NAME "AirLink C5 Mesh V1"
 #define AIRLINK_HARDWARE_ID "airlink-c5-mesh-v1"
+#define AIRLINK_IMAGE_HARDWARE_MARKER \
+    "AIRLINK_HW=airlink-c5-mesh-v1;FLASH=8388608;PSRAM=8388608"
 #define AIRLINK_CONFIG_SCHEMA_VERSION 1U
 #define AIRLINK_MAX_FRAME_SIZE 280U
 #define AIRLINK_MAX_UDP_CLIENTS 8U
@@ -57,3 +59,4 @@ typedef struct {
 } airlink_endpoint_stats_t;
 
 uint32_t airlink_crc32(const void *data, size_t len);
+const char *airlink_image_hardware_marker(void);

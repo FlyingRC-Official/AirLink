@@ -70,7 +70,7 @@ static void handle_builtin(const char *line)
             airlink_usb_write_cli("ERR flight controller armed\r\n");
             return;
         }
-        airlink_config_t config = *airlink_config_get();
+        airlink_config_t config; airlink_config_get(&config);
         config.usb_mode = strcmp(line, "usb mavlink") == 0 ? AIRLINK_USB_MAVLINK : AIRLINK_USB_LOG_CLI;
         if (airlink_config_save(&config) == ESP_OK) {
             airlink_usb_write_cli("OK mode saved; rebooting\r\n");

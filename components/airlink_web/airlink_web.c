@@ -33,7 +33,8 @@ static bool authorized(httpd_req_t *request)
     char supplied[160];
     if (httpd_req_get_hdr_value_str(request, "Authorization", supplied, sizeof(supplied)) != ESP_OK) return false;
     char credentials[96];
-    snprintf(credentials, sizeof(credentials), "admin:%s", airlink_config_get()->admin_password);
+    airlink_config_t config; airlink_config_get(&config);
+    snprintf(credentials, sizeof(credentials), "admin:%s", config.admin_password);
     unsigned char encoded[144];
     size_t length = 0;
     if (mbedtls_base64_encode(encoded, sizeof(encoded), &length,
@@ -74,6 +75,7 @@ static esp_err_t status_handler(httpd_req_t *request)
     airlink_wifi_status_t wifi; airlink_wifi_get_status(&wifi);
     airlink_uart_health_t uart; airlink_uart_get_health(&uart);
     airlink_endpoint_stats_t fc; airlink_router_get_stats(AIRLINK_ENDPOINT_ID_FC_UART, &fc);
+    airlink_config_t active_config; airlink_config_get(&active_config);
     const esp_app_desc_t *app = esp_app_get_description();
     char json[1536];
     snprintf(json, sizeof(json),
@@ -86,7 +88,7 @@ static esp_err_t status_handler(httpd_req_t *request)
         "\"uart\":{\"bytes_in\":%" PRIu64 ",\"bytes_out\":%" PRIu64 ",\"frames_in\":%" PRIu32
         ",\"drops\":%" PRIu32 ",\"rx_overflow\":%" PRIu32 "}}",
         AIRLINK_PRODUCT_NAME, AIRLINK_HARDWARE_ID, app->version, app->date, app->time,
-        airlink_config_get()->serial_number, s_recovery_mode ? "true" : "false",
+        active_config.serial_number, s_recovery_mode ? "true" : "false",
         s_read_only_mode ? "true" : "false",
         diag.fc_seen ? "true" : "false", diag.fc_armed ? "true" : "false",
         diag.uptime_seconds, diag.free_heap, diag.minimum_free_heap, diag.boot_count,
@@ -99,7 +101,8 @@ static esp_err_t status_handler(httpd_req_t *request)
 static esp_err_t config_get_handler(httpd_req_t *request)
 {
     if (!authorized(request)) return require_auth(request);
-    const airlink_config_t *c = airlink_config_get();
+    airlink_config_t config; airlink_config_get(&config);
+    const airlink_config_t *c = &config;
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) return ESP_ERR_NO_MEM;
     cJSON_AddNumberToObject(root, "schema_version", c->schema_version);
@@ -167,7 +170,7 @@ static esp_err_t config_put_handler(httpd_req_t *request)
     body[received_total] = '\0';
     cJSON *root = cJSON_Parse(body);
     if (root == NULL) return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "invalid JSON");
-    airlink_config_t c = *airlink_config_get();
+    airlink_config_t c; airlink_config_get(&c);
     uint32_t value = c.route_mode;
     bool valid = json_u32(root, "route_mode", &value); c.route_mode = (airlink_route_mode_t)value;
     valid &= json_u32(root, "uart_baud", &c.uart_baud);

@@ -85,7 +85,8 @@ static bool finish_frame(airlink_mavlink_parser_t *parser, airlink_mavlink_frame
         if (!crc_valid) parser->errors++;
     }
     const size_t payload_offset = header_length;
-    const bool armed = message_id == 0 && known && crc_valid && payload_length >= 7 &&
+    const bool heartbeat_valid = message_id == 0 && known && crc_valid && payload_length >= 9;
+    const bool armed = heartbeat_valid &&
                        (parser->buffer[payload_offset + 6U] & 0x80U) != 0;
     *frame = (airlink_mavlink_frame_t){
         .bytes = parser->buffer,
@@ -97,9 +98,21 @@ static bool finish_frame(airlink_mavlink_parser_t *parser, airlink_mavlink_frame
         .crc_known = known,
         .crc_valid = crc_valid,
         .high_priority = priority_message(message_id),
+        .heartbeat_valid = heartbeat_valid,
         .heartbeat_armed = armed,
+        .heartbeat_type = heartbeat_valid ? parser->buffer[payload_offset + 4U] : 0,
+        .heartbeat_autopilot = heartbeat_valid ? parser->buffer[payload_offset + 5U] : 0,
     };
     return true;
+}
+
+bool airlink_mavlink_heartbeat_is_autopilot(const airlink_mavlink_frame_t *frame)
+{
+    /* MAV_COMP_ID_AUTOPILOT1 is 1 and MAV_AUTOPILOT_INVALID is 8.  Pinning the
+     * safety state to the primary autopilot component prevents companion,
+     * camera and GCS heartbeats on the FC UART from clearing an armed latch. */
+    return frame != NULL && frame->heartbeat_valid && frame->component_id == 1U &&
+           frame->heartbeat_autopilot != 8U;
 }
 
 bool airlink_mavlink_parse_byte(airlink_mavlink_parser_t *parser, uint8_t byte,

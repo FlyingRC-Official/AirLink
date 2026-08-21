@@ -29,6 +29,8 @@ static size_t s_dedup_cursor;
 static SemaphoreHandle_t s_lock;
 static airlink_route_mode_t s_mode;
 static atomic_bool s_fc_armed;
+static bool s_fc_identity_known;
+static uint8_t s_fc_system_id;
 static int64_t s_fc_last_seen_us;
 
 static endpoint_slot_t *find_endpoint(uint8_t id)
@@ -45,6 +47,8 @@ esp_err_t airlink_router_init(airlink_route_mode_t mode)
     memset(s_dedup, 0, sizeof(s_dedup));
     s_dedup_cursor = 0;
     atomic_store(&s_fc_armed, false);
+    s_fc_identity_known = false;
+    s_fc_system_id = 0;
     s_fc_last_seen_us = 0;
     s_mode = mode;
     s_lock = xSemaphoreCreateMutex();
@@ -139,7 +143,17 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
         }
         if (source->endpoint.type == AIRLINK_ENDPOINT_UART) {
             s_fc_last_seen_us = esp_timer_get_time();
-            if (frame.message_id == 0 && frame.crc_valid) atomic_store(&s_fc_armed, frame.heartbeat_armed);
+            if (airlink_mavlink_heartbeat_is_autopilot(&frame)) {
+                if (!s_fc_identity_known) {
+                    s_fc_identity_known = true;
+                    s_fc_system_id = frame.system_id;
+                    ESP_LOGI(TAG, "pinned FC heartbeat sysid=%u compid=%u",
+                             frame.system_id, frame.component_id);
+                }
+                if (frame.system_id == s_fc_system_id) {
+                    atomic_store(&s_fc_armed, frame.heartbeat_armed);
+                }
+            }
         } else if (duplicate_network_frame(frame.bytes, frame.length)) {
             continue;
         }

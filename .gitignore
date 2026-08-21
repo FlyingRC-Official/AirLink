@@ -1,4 +1,5 @@
 build*/
+node_modules/
 managed_components/
 sdkconfig
 sdkconfig.old
@@ -8,3 +9,6 @@ internal/
 *.pyc
 __pycache__/
 .DS_Store
+tools/windows_flasher/AirLink-Windows-Flasher-*/
+tools/windows_flasher/*.zip
+tools/windows_flasher/www/

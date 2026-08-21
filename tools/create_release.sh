@@ -4,6 +4,10 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build=${1:-$root/build}
 version=${2:-dev}
 dist="$root/dist/airlink-$version"
+if [ -e "$dist" ]; then
+    echo "release destination already exists: $dist" >&2
+    exit 1
+fi
 mkdir -p "$dist"
 cp "$build/airlink.bin" "$build/bootloader/bootloader.bin" "$build/partition_table/partition-table.bin" "$dist/"
 cp "$build/ota_data_initial.bin" "$build/flash_args" "$dist/"

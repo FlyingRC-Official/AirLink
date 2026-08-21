@@ -2,6 +2,7 @@
 #include "airlink_ota.h"
 
 #include <ctype.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include "airlink_core.h"
@@ -10,14 +11,41 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "psa/crypto.h"
 
 static const char *TAG = "ota";
-static volatile bool s_services_ready;
-static volatile bool s_in_progress;
+static atomic_bool s_services_ready;
+static atomic_bool s_in_progress;
+static atomic_int_fast64_t s_services_ready_since_us;
+static atomic_int_fast64_t s_last_health_us;
+
+#define OTA_CONFIRM_WINDOW_US (30LL * 1000LL * 1000LL)
+#define OTA_HEALTH_LEASE_US (3LL * 1000LL * 1000LL)
+#define OTA_CONFIRM_DEADLINE_US (60LL * 1000LL * 1000LL)
+#define OTA_RECV_TIMEOUT_LIMIT 5U
+
+static bool partition_contains_marker(const esp_partition_t *partition, size_t image_size)
+{
+    const uint8_t *marker = (const uint8_t *)AIRLINK_IMAGE_HARDWARE_MARKER;
+    const size_t marker_len = strlen(AIRLINK_IMAGE_HARDWARE_MARKER);
+    uint8_t buffer[1024];
+    if (partition == NULL || image_size < marker_len) return false;
+    const size_t step = sizeof(buffer) - marker_len + 1U;
+    for (size_t offset = 0; offset < image_size; offset += step) {
+        const size_t count = image_size - offset < sizeof(buffer) ? image_size - offset : sizeof(buffer);
+        if (esp_partition_read(partition, offset, buffer, count) != ESP_OK) return false;
+        for (size_t i = 0; i + marker_len <= count; ++i) {
+            if (memcmp(&buffer[i], marker, marker_len) == 0) return true;
+        }
+        if (count < sizeof(buffer)) break;
+    }
+    return false;
+}
 
 static bool header_equals(httpd_req_t *request, const char *name, const char *expected)
 {
@@ -48,16 +76,24 @@ static void rollback_confirmation_task(void *argument)
         vTaskDelete(NULL);
         return;
     }
-    /* Keep the image pending for a real stability window.  A panic or watchdog
-     * reset during this period leaves it unconfirmed so the bootloader can
-     * roll back instead of accepting a merely-started image. */
-    for (unsigned second = 0; second < 30; ++second) vTaskDelay(pdMS_TO_TICKS(1000));
-    if (s_services_ready) {
-        ESP_LOGI(TAG, "services healthy; confirming OTA image");
-        esp_ota_mark_app_valid_cancel_rollback();
-    } else {
-        ESP_LOGE(TAG, "services not healthy; rolling back");
-        esp_ota_mark_app_invalid_rollback_and_reboot();
+    const int64_t task_started_us = esp_timer_get_time();
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        const int64_t now = esp_timer_get_time();
+        const int64_t ready_since = atomic_load(&s_services_ready_since_us);
+        const int64_t last_health = atomic_load(&s_last_health_us);
+        const bool ready = atomic_load(&s_services_ready);
+        if (ready && ready_since > 0 && now - ready_since >= OTA_CONFIRM_WINDOW_US &&
+            last_health >= ready_since && now - last_health <= OTA_HEALTH_LEASE_US) {
+            ESP_LOGI(TAG, "services remained healthy; confirming OTA image");
+            esp_ota_mark_app_valid_cancel_rollback();
+            break;
+        }
+        if (now - task_started_us >= OTA_CONFIRM_DEADLINE_US) {
+            ESP_LOGE(TAG, "services did not sustain health; rolling back");
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+            break;
+        }
     }
     vTaskDelete(NULL);
 }
@@ -67,8 +103,19 @@ esp_err_t airlink_ota_init(void)
     return xTaskCreate(rollback_confirmation_task, "ota_confirm", 3072, NULL, 8, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-void airlink_ota_services_ready(bool ready) { s_services_ready = ready; }
-bool airlink_ota_in_progress(void) { return s_in_progress; }
+void airlink_ota_services_ready(bool ready)
+{
+    atomic_store(&s_services_ready, ready);
+    atomic_store(&s_services_ready_since_us, ready ? esp_timer_get_time() : 0);
+    if (!ready) atomic_store(&s_last_health_us, 0);
+}
+
+void airlink_ota_health_heartbeat(bool healthy)
+{
+    if (healthy && atomic_load(&s_services_ready)) atomic_store(&s_last_health_us, esp_timer_get_time());
+}
+
+bool airlink_ota_in_progress(void) { return atomic_load(&s_in_progress); }
 
 esp_err_t airlink_ota_http_upload(httpd_req_t *request)
 {
@@ -81,23 +128,32 @@ esp_err_t airlink_ota_http_upload(httpd_req_t *request)
 
     const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
     if (target == NULL || request->content_len > target->size) return ESP_ERR_INVALID_SIZE;
+    bool expected_idle = false;
+    if (!atomic_compare_exchange_strong(&s_in_progress, &expected_idle, true)) return ESP_ERR_INVALID_STATE;
     esp_ota_handle_t handle;
-    ESP_RETURN_ON_ERROR(esp_ota_begin(target, request->content_len, &handle), TAG, "OTA begin");
-    s_in_progress = true;
+    const esp_err_t begin_err = esp_ota_begin(target, request->content_len, &handle);
+    if (begin_err != ESP_OK) {
+        atomic_store(&s_in_progress, false);
+        ESP_LOGE(TAG, "OTA begin: %s", esp_err_to_name(begin_err));
+        return begin_err;
+    }
     airlink_led_set(AIRLINK_LED_OTA);
     psa_hash_operation_t sha = PSA_HASH_OPERATION_INIT;
     if (psa_hash_setup(&sha, PSA_ALG_SHA_256) != PSA_SUCCESS) {
         esp_ota_abort(handle);
-        s_in_progress = false;
+        atomic_store(&s_in_progress, false);
         return ESP_FAIL;
     }
     uint8_t buffer[2048];
     int remaining = request->content_len;
+    unsigned consecutive_timeouts = 0;
     esp_err_t err = ESP_OK;
     while (remaining > 0) {
         const int wanted = remaining < (int)sizeof(buffer) ? remaining : (int)sizeof(buffer);
         const int received = httpd_req_recv(request, (char *)buffer, wanted);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT && consecutive_timeouts++ < OTA_RECV_TIMEOUT_LIMIT) continue;
         if (received <= 0) { err = ESP_FAIL; break; }
+        consecutive_timeouts = 0;
         if (psa_hash_update(&sha, buffer, (size_t)received) != PSA_SUCCESS) {
             err = ESP_FAIL;
             break;
@@ -121,8 +177,12 @@ esp_err_t airlink_ota_http_upload(httpd_req_t *request)
         err = esp_ota_get_partition_description(target, &descriptor);
         if (err == ESP_OK && strcmp(descriptor.project_name, "airlink") != 0) err = ESP_ERR_INVALID_VERSION;
     }
+    if (err == ESP_OK && !partition_contains_marker(target, (size_t)request->content_len)) {
+        ESP_LOGE(TAG, "OTA image target marker missing or incompatible");
+        err = ESP_ERR_INVALID_VERSION;
+    }
     if (err == ESP_OK) err = esp_ota_set_boot_partition(target);
-    s_in_progress = false;
+    atomic_store(&s_in_progress, false);
     if (err != ESP_OK) airlink_led_set(AIRLINK_LED_ERROR);
     return err;
 }

@@ -6,5 +6,6 @@
 
 esp_err_t airlink_ota_init(void);
 void airlink_ota_services_ready(bool ready);
+void airlink_ota_health_heartbeat(bool healthy);
 esp_err_t airlink_ota_http_upload(httpd_req_t *request);
 bool airlink_ota_in_progress(void);

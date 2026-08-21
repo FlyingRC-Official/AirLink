@@ -8,6 +8,12 @@ jobs:
       - run: tests/run_host_tests.sh
       - run: tests/check_web.sh
       - run: python3 -m py_compile tools/airlink_factory.py
+      - name: Build and test Windows flasher
+        working-directory: tools/windows_flasher
+        run: |
+          npm ci
+          npm run build
+          npm test
   esp-idf:
     runs-on: ubuntu-latest
     strategy:
