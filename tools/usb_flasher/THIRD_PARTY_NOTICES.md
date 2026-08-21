@@ -1,6 +1,6 @@
 # Third-party notices
 
-The AirLink Windows Local Flasher bundles the following runtime libraries:
+The AirLink cross-platform local USB flasher bundles the following runtime libraries:
 
 - `esptool-js` 0.6.1, Copyright Espressif Systems (Shanghai) Co. Ltd.,
   Apache License 2.0, <https://github.com/espressif/esptool-js>

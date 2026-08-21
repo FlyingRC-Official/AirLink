@@ -5,15 +5,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/usb_flasher/package-lock.json
       - run: tests/run_host_tests.sh
       - run: tests/check_web.sh
       - run: python3 -m py_compile tools/airlink_factory.py
-      - name: Build and test Windows flasher
-        working-directory: tools/windows_flasher
+      - name: Build and test cross-platform USB flasher
+        working-directory: tools/usb_flasher
         run: |
           npm ci
           npm run build
           npm test
+  flasher-platform:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: tools/usb_flasher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/usb_flasher/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Validate Windows launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item www/AirLink-Flasher-v0.2.1-dev.html AirLink-Flasher-v0.2.1-dev.html
+          $env:AIRLINK_FLASHER_DRY_RUN = "1"
+          cmd /c start_flasher.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate macOS launcher
+        if: runner.os == 'macOS'
+        run: |
+          cp www/AirLink-Flasher-v0.2.1-dev.html AirLink-Flasher-v0.2.1-dev.html
+          AIRLINK_FLASHER_DRY_RUN=1 ./start_flasher.command
   esp-idf:
     runs-on: ubuntu-latest
     strategy:

@@ -37,7 +37,7 @@ flowchart LR
 - Stores configuration in CRC-protected, generation-numbered NVS A/B records.
   The factory serial number and initial password use a separate identity
   partition. Blank devices can consume a CRC-protected one-time password record
-  written by the Windows flasher; the record is erased after first use.
+  written by the cross-platform USB flasher; the record is erased after first use.
 - Passively monitors DroneCAN `NodeStatus`, TWAI error counters and bus-off
   recovery. CAN transmission and bitrate switching are enabled only in the
   factory-test build.
@@ -69,7 +69,7 @@ per-board administrator password.
 - ESP-IDF: exactly 6.0.2 for the first qualified release
 - Hardware ID: `airlink-c5-mesh-v1`
 - Default AP: `FlyingRC-AirLink-XXXX`, `192.168.4.1`; password is generated per
-  device and must be saved by factory test or the Windows flasher
+  device and must be saved by factory test or the cross-platform USB flasher
 - MAVLink: UDP 14550, TCP 5760
 
 In AP+STA mode telemetry sockets listen only on the private AirLink AP address;
@@ -103,10 +103,23 @@ idf.py -B build-recovery -D SDKCONFIG=build-recovery/sdkconfig -D SDKCONFIG_DEFA
 Initial USB flashing requires GPIO27 high and GPIO28 low during reset. Hold
 BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
+### Local USB flasher
+
+The `v0.2.1-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.2.1-dev.zip`, then run
+`start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
+Edge is required; Safari is not supported. The page downloads only the fixed
+`v0.2.1-dev` firmware from the matching GitHub tag and accepts it only when the
+manifest SHA-256 and GitHub Release digest both match.
+
+The flasher never performs a whole-chip erase and never writes normal NVS or
+factory identity. A blank device receives only the one-time password record at
+`0x2C000`. Passwords, logs and USB data remain local to the browser.
+
 ## Operation
 
 1. Connect to the AP using the per-board password recorded by factory test or
-   downloaded from the Windows flasher.
+   downloaded from the cross-platform USB flasher.
 2. Open <http://192.168.4.1> and sign in as `admin` with the same password.
 3. Configure the flight controller UART for MAVLink at the selected baud rate.
 4. QGroundControl normally discovers UDP 14550. Mission Planner can use UDP

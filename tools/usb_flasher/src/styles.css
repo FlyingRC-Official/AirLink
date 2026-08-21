@@ -1,5 +1,5 @@
 :root {
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-family: "SF Pro Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   color: #edf6ff;
   background: #07111e;
   font-synthesis: none;
@@ -88,6 +88,11 @@ h1 { margin-bottom: 0; font-size: clamp(28px, 4vw, 44px); letter-spacing: -.04em
 .release-summary div { padding: 11px 12px; background: rgba(4,14,24,.45); border-radius: 10px; }
 .release-summary span { display: block; color: #71879d; font-size: 10px; margin-bottom: 5px; }
 .release-summary strong { font-size: 12px; color: #d9e7f5; }
+.firmware-actions { display: flex; align-items: center; gap: 9px; margin: 0 0 12px; }
+.firmware-actions button, .firmware-actions a { border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; color: #a9c1d6; background: rgba(255,255,255,.03); font-size: 11px; text-decoration: none; }
+.firmware-actions button { cursor: pointer; }
+.firmware-actions button:hover:not(:disabled), .firmware-actions a:hover { color: white; border-color: rgba(56,215,208,.3); }
+.firmware-actions button:disabled { cursor: wait; opacity: .45; }
 .file-list { display: grid; gap: 7px; }
 .file-row { display: grid; grid-template-columns: 82px 1fr auto; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid rgba(255,255,255,.045); border-radius: 10px; background: rgba(255,255,255,.018); }
 .file-row code { color: var(--cyan); font-size: 11px; }

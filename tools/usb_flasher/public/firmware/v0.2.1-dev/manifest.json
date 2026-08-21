@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "hardware_id": "airlink-c5-mesh-v1",
+  "target_chip": "esp32c5",
+  "version": "v0.2.1-dev",
+  "created_utc": "2026-08-21T05:55:58.405214+00:00",
+  "flash_bytes": 8388608,
+  "psram_bytes": 8388608,
+  "ota_image": "airlink.bin",
+  "images": {
+    "airlink-v0.2.1-dev-merged.bin": "e749c11e585f8b31b65250775e69c14489116245dccdeecb0bec32c255277d5e",
+    "airlink.bin": "3c5a939994129901d91e1b341c00ba3d81b1129ac70a03bad9232b7159a93520",
+    "bootloader.bin": "cc36df8e3110a248e9e527d2b191d52317e38a1ce339b6e44953cf131d7794d0",
+    "ota_data_initial.bin": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
+    "partition-table.bin": "22e6fd23713b87ef81c9cbb6927bfc3273a03d3693b54781833a2f3534e8abdf"
+  },
+  "flash_offsets": {
+    "bootloader.bin": "0x2000",
+    "partition-table.bin": "0x8000",
+    "ota_data_initial.bin": "0x19000",
+    "airlink.bin": "0x30000"
+  }
+}

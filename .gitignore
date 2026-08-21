@@ -9,6 +9,7 @@ internal/
 *.pyc
 __pycache__/
 .DS_Store
-tools/windows_flasher/AirLink-Windows-Flasher-*/
-tools/windows_flasher/*.zip
-tools/windows_flasher/www/
+tools/usb_flasher/AirLink-*-Flasher-*/
+tools/usb_flasher/*.zip
+tools/usb_flasher/AirLink-Flasher-*.html
+tools/usb_flasher/www/

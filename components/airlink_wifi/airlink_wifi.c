@@ -389,7 +389,6 @@ esp_err_t airlink_wifi_start(const airlink_config_t *config)
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(mode), TAG, "Wi-Fi mode");
     wifi_band_mode_t band = config->wifi_band == AIRLINK_WIFI_BAND_2G ? WIFI_BAND_MODE_2G_ONLY :
                             config->wifi_band == AIRLINK_WIFI_BAND_5G ? WIFI_BAND_MODE_5G_ONLY : WIFI_BAND_MODE_AUTO;
-    ESP_RETURN_ON_ERROR(esp_wifi_set_band_mode(band), TAG, "Wi-Fi band");
     if (config->wifi_mode != AIRLINK_WIFI_STA) {
         wifi_config_t ap = {0};
         const size_t ssid_length = strlen(config->ap_ssid);
@@ -410,6 +409,9 @@ esp_err_t airlink_wifi_start(const airlink_config_t *config)
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &sta), TAG, "STA config");
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start");
+    /* ESP-IDF requires the driver to be started before selecting the active
+     * band; calling this earlier returns ESP_ERR_WIFI_NOT_STARTED. */
+    ESP_RETURN_ON_ERROR(esp_wifi_set_band_mode(band), TAG, "Wi-Fi band");
     if (config->wifi_mode != AIRLINK_WIFI_AP) esp_wifi_connect();
     ESP_RETURN_ON_ERROR(open_sockets(), TAG, "telemetry sockets");
     return xTaskCreate(network_task, "telemetry_net", 6144, NULL, 15, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;

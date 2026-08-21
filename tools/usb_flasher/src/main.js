@@ -4,21 +4,10 @@ import {
   PROVISION, createProvisionImage, credentialText, deviceSsid, factoryIdentityPresent,
   generatePassword, passwordValid,
 } from "./provisioning.js";
+import {
+  RELEASE, loadReleaseFirmware, releasePageUrl,
+} from "./release-firmware.js";
 import "./styles.css";
-
-const RELEASE = {
-  version: "v0.2.0-dev",
-  label: "AirLink V0.2.0 DEV",
-  hardwareId: "airlink-c5-mesh-v1",
-  targetChip: "esp32c5",
-  basePath: "./firmware/v0.2.0-dev",
-  files: [
-    { name: "bootloader.bin", address: 0x2000, kind: "ESP 镜像", magic: [0xe9] },
-    { name: "partition-table.bin", address: 0x8000, kind: "分区表", magic: [0xaa, 0x50] },
-    { name: "ota_data_initial.bin", address: 0x19000, kind: "OTA 状态", size: 8192 },
-    { name: "airlink.bin", address: 0x30000, kind: "应用固件", magic: [0xe9] },
-  ],
-};
 
 const state = {
   manifest: null,
@@ -34,9 +23,15 @@ const state = {
   ssid: "",
   identityBlank: false,
   credentials: "",
+  releaseUrl: releasePageUrl(),
 };
 
 const app = document.querySelector("#app");
+const platform = /Mac/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? "") ? "macOS" :
+  /Win/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? "") ? "Windows" : "当前系统";
+const serialHelp = platform === "macOS" ?
+  "关闭占用串口的 screen、Arduino Serial Monitor 或其他终端。" :
+  "关闭占用 COM 口的 Mission Planner、Arduino Serial Monitor 或其他终端。";
 
 app.innerHTML = `
   <main class="shell">
@@ -49,17 +44,17 @@ app.innerHTML = `
         </div>
         <div class="local-badge"><i></i> 本机运行</div>
       </div>
-      <p class="hero-copy">在 Windows Edge 或 Chrome 中，通过原生 USB Serial/JTAG 安全写入 AirLink 固件。</p>
+      <p class="hero-copy">在 Windows 或 macOS 的 Chrome/Edge 中，通过原生 USB Serial/JTAG 安全写入 AirLink 固件。</p>
       <div class="safety-strip">
         <strong>上电前确认</strong>
         <span>拆除螺旋桨</span>
         <span>只保留 USB 一路 5V</span>
-        <span>关闭 Mission Planner 与串口终端</span>
+        <span>关闭地面站与串口终端</span>
       </div>
     </header>
 
     <section id="browserWarning" class="browser-warning" hidden>
-      当前浏览器不支持 Web Serial。请用 Windows 版 Microsoft Edge 或 Google Chrome 打开本页。
+      当前浏览器或打开方式不支持 Web Serial。请在 Windows/macOS 桌面版 Microsoft Edge 或 Google Chrome 中打开本地 HTML。
     </section>
 
     <div class="layout">
@@ -93,14 +88,19 @@ app.innerHTML = `
         <section class="card step-card" id="firmwareCard">
           <div class="step-heading">
             <span class="step-number">02</span>
-            <div><h2>核对固件</h2><p>使用随工具提供的已校验发布文件</p></div>
+            <div><h2>核对固件</h2><p>从固定 GitHub Release 标签在线加载并双重校验</p></div>
             <span class="status-pill loading" id="firmwareStatus">正在校验</span>
           </div>
 
           <div class="release-summary">
             <div><span>发布版本</span><strong>${RELEASE.label}</strong></div>
             <div><span>目标硬件</span><strong>ESP32-C5 · N8R8</strong></div>
-            <div><span>写入方式</span><strong>保留 NVS / 工厂身份</strong></div>
+            <div><span>固件来源</span><strong>GitHub Release · 双 SHA-256</strong></div>
+          </div>
+
+          <div class="firmware-actions">
+            <button id="retryFirmware" type="button">重新加载固件</button>
+            <a id="releaseLink" href="${releasePageUrl()}" target="_blank" rel="noreferrer">查看 GitHub Release</a>
           </div>
 
           <div class="file-list" id="fileList" aria-live="polite"></div>
@@ -153,7 +153,7 @@ app.innerHTML = `
           </div>
 
           <button class="button flash-button" id="flashButton" type="button" disabled>
-            安全烧录 AirLink V0.2.0 DEV
+            安全烧录 AirLink V0.2.1 DEV
           </button>
           <p class="microcopy centered">预计约 1–3 分钟。写入完成前不要关闭网页、拔出 USB 或按 RESET。</p>
 
@@ -175,14 +175,14 @@ app.innerHTML = `
         <pre id="logOutput" aria-live="polite"></pre>
         <div class="log-help">
           <strong>连接失败？</strong>
-          <p>关闭占用 COM 口的软件；按住 BOOT、点按 RESET、松开 BOOT，然后重新连接。</p>
+          <p>${serialHelp} 按住 BOOT、点按 RESET、松开 BOOT，然后重新连接。</p>
         </div>
       </aside>
     </div>
 
     <footer>
       <span>AirLink C5 Mesh V1</span>
-      <span>本页仅与已选择的 USB 设备通信，不上传固件或日志。</span>
+      <span>页面从 GitHub 下载并校验固件；密码、日志和 USB 数据不会上传。</span>
     </footer>
   </main>
 `;
@@ -193,7 +193,7 @@ const ui = Object.fromEntries(
     "firmwareStatus", "fileList", "safetyCheck", "flashButton", "flashStatus", "progressLabel",
     "progressPercent", "progressTrack", "progressBar", "successPanel", "successText", "logOutput", "copyLog", "clearLog",
     "credentialStatus", "ssidInput", "passwordInput", "togglePassword", "generatePassword", "copyCredentials",
-    "downloadCredentials", "credentialCheck", "credentialHint",
+    "downloadCredentials", "credentialCheck", "credentialHint", "retryFirmware", "releaseLink",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -236,20 +236,6 @@ function setProgress(value, label) {
 function formatBytes(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   return `${Math.ceil(bytes / 1024)} KB`;
-}
-
-async function sha256(data) {
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function validateFile(descriptor, data) {
-  if (descriptor.size && data.length !== descriptor.size) {
-    throw new Error(`${descriptor.name} 大小错误：应为 ${descriptor.size} 字节`);
-  }
-  if (descriptor.magic && descriptor.magic.some((byte, index) => data[index] !== byte)) {
-    throw new Error(`${descriptor.name} 文件头无效`);
-  }
 }
 
 function renderFiles(items = []) {
@@ -305,44 +291,37 @@ function rebuildCredentials() {
   updateFlashAvailability();
 }
 
-async function loadBundledFirmware() {
+async function loadFirmwareFromRelease() {
+  state.manifest = null;
+  state.firmware = [];
+  ui.retryFirmware.disabled = true;
   renderFiles();
-  log(`加载 ${RELEASE.label} 固件清单…`);
+  setPill(ui.firmwareStatus, "正在下载", "loading");
+  log(`从 GitHub Release 加载 ${RELEASE.label} 元数据与固件…`);
   try {
-    const manifestResponse = await fetch(`${RELEASE.basePath}/manifest.json`, { cache: "no-store" });
-    if (!manifestResponse.ok) throw new Error("无法读取固件 manifest.json");
-    const manifest = await manifestResponse.json();
-    if (
-      manifest.version !== RELEASE.version ||
-      manifest.hardware_id !== RELEASE.hardwareId ||
-      manifest.target_chip !== RELEASE.targetChip ||
-      manifest.flash_bytes !== 8388608 ||
-      manifest.psram_bytes !== 8388608
-    ) {
-      throw new Error("固件清单与 AirLink C5 N8R8 不匹配");
-    }
-
-    const firmware = [];
-    for (const descriptor of RELEASE.files) {
-      const response = await fetch(`${RELEASE.basePath}/${descriptor.name}`, { cache: "no-store" });
-      if (!response.ok) throw new Error(`无法读取 ${descriptor.name}`);
-      const data = new Uint8Array(await response.arrayBuffer());
-      validateFile(descriptor, data);
-      const actualHash = await sha256(data);
-      if (manifest.images?.[descriptor.name] !== actualHash) {
-        throw new Error(`${descriptor.name} SHA-256 校验失败`);
-      }
-      firmware.push({ ...descriptor, data, sha256: actualHash });
-    }
-
-    state.manifest = manifest;
-    state.firmware = firmware;
-    renderFiles(firmware);
+    const loaded = await loadReleaseFirmware({
+      onFile(item) {
+        renderFiles([...state.firmware, item]);
+        state.firmware.push(item);
+        log(`${item.name} 已通过 manifest 与 Release digest 双重校验。`, "success");
+      },
+    });
+    state.manifest = loaded.manifest;
+    state.firmware = loaded.firmware;
+    state.releaseUrl = loaded.releaseUrl;
+    ui.releaseLink.href = loaded.releaseUrl;
+    renderFiles(loaded.firmware);
     setPill(ui.firmwareStatus, "校验通过", "success");
-    log("四个固件文件 SHA-256 校验全部通过。", "success");
+    log("GitHub Release 元数据、manifest 和四个固件文件双重 SHA-256 校验全部通过。", "success");
   } catch (error) {
+    state.manifest = null;
+    state.firmware = [];
+    renderFiles();
     setPill(ui.firmwareStatus, "校验失败", "danger");
     log(error instanceof Error ? error.message : error, "error");
+    log("未验证的固件不会进入烧录队列。请检查网络后点击重新加载。", "warning");
+  } finally {
+    ui.retryFirmware.disabled = false;
   }
   updateFlashAvailability();
 }
@@ -457,6 +436,27 @@ function md5(image) {
   return SparkMD5.ArrayBuffer.hash(bytes);
 }
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (_) {
+      // file:// clipboard permission can be stricter; use the selection fallback.
+    }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.append(area);
+  area.select();
+  const copied = document.execCommand("copy");
+  area.remove();
+  if (!copied) throw new Error("浏览器拒绝剪贴板权限");
+}
+
 async function flashFirmware() {
   if (!state.connected || !state.loader || state.flashing || !ui.safetyCheck.checked) return;
   state.flashing = true;
@@ -526,6 +526,7 @@ async function flashFirmware() {
 
 ui.connectButton.addEventListener("click", connectDevice);
 ui.flashButton.addEventListener("click", flashFirmware);
+ui.retryFirmware.addEventListener("click", loadFirmwareFromRelease);
 ui.safetyCheck.addEventListener("change", updateFlashAvailability);
 ui.credentialCheck.addEventListener("change", updateFlashAvailability);
 ui.passwordInput.addEventListener("input", () => {
@@ -544,7 +545,7 @@ ui.togglePassword.addEventListener("click", () => {
 });
 ui.copyCredentials.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(state.credentials);
+    await copyText(state.credentials);
     ui.credentialCheck.checked = true;
     setPill(ui.credentialStatus, "已复制", "success");
     updateFlashAvailability();
@@ -569,7 +570,7 @@ ui.downloadCredentials.addEventListener("click", () => {
 ui.clearLog.addEventListener("click", () => ui.logOutput.replaceChildren());
 ui.copyLog.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(ui.logOutput.innerText);
+    await copyText(ui.logOutput.innerText);
     const original = ui.copyLog.textContent;
     ui.copyLog.textContent = "已复制";
     setTimeout(() => { ui.copyLog.textContent = original; }, 1200);
@@ -587,10 +588,10 @@ window.addEventListener("beforeunload", (event) => {
 if (!("serial" in navigator) || !window.isSecureContext) {
   ui.browserWarning.hidden = false;
   ui.connectButton.disabled = true;
-  log("浏览器不支持 Web Serial，或页面不是从 localhost 打开。", "error");
+  log("浏览器不支持 Web Serial，或当前本地文件未被视为可信上下文。请改用桌面版 Chrome/Edge。", "error");
 } else {
-  log("浏览器环境检查通过。", "success");
+  log(`${platform} 浏览器环境检查通过。`, "success");
 }
 
 ui.passwordInput.value = generatePassword();
-loadBundledFirmware();
+loadFirmwareFromRelease();

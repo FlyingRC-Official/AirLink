@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1-dev - 2026-08-21
+
+- Fixed the ESP-IDF 6.0.2 Wi-Fi initialization order so band mode is selected
+  only after `esp_wifi_start()`, preventing `ESP_ERR_WIFI_NOT_STARTED` reset
+  loops on normal startup.
+- Replaced the Windows-only localhost flasher with a Windows/macOS single-file
+  local Web Serial page that requires no Python or local server.
+- Pinned the flasher to `v0.2.1-dev` and required firmware bytes to match both
+  the manifest SHA-256 values and GitHub Release asset digests.
+- Added Windows Edge/Chrome and macOS Chrome/Edge launchers while retaining
+  chip, flash-capacity, identity, password and fixed-offset safety checks.
+- This remains a development prerelease; software and CI validation do not
+  constitute electrical, RF, interrupted-update or flight acceptance.
+
 ## 0.2.0-dev - 2026-08-21
 
 - Fixed first boot on a blank NVS partition so the `airlink` namespace and

@@ -1,11 +1,11 @@
 {
-  "name": "airlink-windows-flasher",
-  "version": "0.2.0",
+  "name": "airlink-usb-flasher",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 8765",
-    "build": "vite build",
+    "build": "vite build && node scripts/build-single-file.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 8765",
     "test": "node tests/validate_bundle.mjs"
   },
