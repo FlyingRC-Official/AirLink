@@ -35,7 +35,9 @@ export class WifiTransport {
     const result = await response.json().catch(() => ({ error: response.statusText }));
     if (!response.ok) {
       if (response.status === 401) throw new Error("用户名或管理密码错误");
-      if (response.status === 423) throw new Error(result.error === "flight_controller_armed" ? "飞控处于解锁状态，禁止修改" : "设备当前为只读模式");
+      if (response.status === 404) throw new Error("固件版本过旧或接口不受支持");
+      if (response.status === 409) throw new Error("设备正忙，请结束 OTA 或其他配置操作后重试");
+      if (response.status === 423) throw new Error(result.error === "flight_controller_armed" ? "飞控处于解锁状态，禁止修改" : result.error === "wifi_scan_not_allowed" ? "飞控已解锁或 OTA 进行中，不能扫描 Wi‑Fi" : "设备当前为只读模式");
       throw new Error(result.error || result.message || `HTTP ${response.status}`);
     }
     return result;
@@ -43,12 +45,37 @@ export class WifiTransport {
 
   async connect() {
     this.onLog(`正在通过 Wi‑Fi 连接 ${this.baseUrl}`);
-    const [status, config] = await Promise.all([this.call("/api/v1/status"), this.call("/api/v1/config")]);
+    const [status, config, capabilities] = await Promise.all([
+      this.call("/api/v1/status"), this.call("/api/v1/config"),
+      this.call("/api/v1/capabilities").catch(() => ({ api_schema: "legacy", features: {} })),
+    ]);
     this.onLog("Wi‑Fi 连接与身份验证成功", "success");
-    return { status, config };
+    this.capabilities = capabilities;
+    return { status, config, capabilities };
   }
   async refresh() { return { status: await this.call("/api/v1/status"), config: await this.call("/api/v1/config") }; }
   async save(config) { return this.call("/api/v1/config", { method: "PUT", body: config }); }
+  async validate(config) { return this.call("/api/v1/config/validate", { method: "POST", body: config }); }
+  async wifiScan() { return this.call("/api/v1/wifi/scan", { method: "POST" }); }
+  async diagnostics() {
+    const [status, clients, can] = await Promise.all([
+      this.call("/api/v1/status"), this.call("/api/v1/clients"), this.call("/api/v1/can"),
+    ]);
+    return { status, clients, can, collected_at: new Date().toISOString() };
+  }
+  async ota(file, onProgress = () => {}) {
+    const authorization = btoa(unescape(encodeURIComponent(`${this.username}:${this.password}`)));
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", `${this.baseUrl}/api/v1/ota`);
+      request.setRequestHeader("Authorization", `Basic ${authorization}`);
+      request.setRequestHeader("Content-Type", "application/octet-stream");
+      request.upload.onprogress = (event) => onProgress(event.lengthComputable ? event.loaded / event.total : 0);
+      request.onerror = () => reject(new Error("固件上传连接中断"));
+      request.onload = () => request.status >= 200 && request.status < 300 ? resolve(JSON.parse(request.responseText || "{}")) : reject(new Error(`OTA 上传失败：HTTP ${request.status}`));
+      request.send(file);
+    });
+  }
   async reboot() { return this.call("/api/v1/actions/reboot", { method: "POST" }); }
   async factoryReset() { return this.call("/api/v1/actions/factory-reset", { method: "POST" }); }
   async disconnect() { this.password = ""; }
@@ -103,7 +130,8 @@ export class UsbTransport {
   async connect() {
     if (!("serial" in navigator)) throw new Error("当前浏览器不支持 Web Serial，请使用 Chrome 或 Edge");
     this.onLog("请选择 Espressif USB Serial/JTAG 设备");
-    this.port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    this.port = this.authorizedPort || await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    this.authorizedPort = this.port;
     await this.port.open({ baudRate: 115200, bufferSize: 4096 });
     this.writer = this.port.writable.getWriter();
     this.reader = this.port.readable.getReader();
@@ -117,7 +145,9 @@ export class UsbTransport {
     if (config.route_mode === -1 || config.route_mode === undefined) throw new Error("未识别到 AirLink 配置终端，请按 RESET 后重试");
     const statusOutput = await this.execute("status");
     this.onLog("USB 配置终端已连接", "success");
-    return { config, status: this.parseStatus(statusOutput) };
+    const status = this.parseStatus(statusOutput);
+    status.serial = config.serial_number || "";
+    return { config, status };
   }
 
   parseStatus(output) {
@@ -130,6 +160,15 @@ export class UsbTransport {
         rssi: Number(read("wifi_rssi") || 0),
         udp_clients: Number(read("udp_clients") || 0),
         tcp_clients: Number(read("tcp_clients") || 0),
+        reconnects_total: Number(read("wifi_reconnects_total") || read("wifi_reconnects") || 0),
+        reconnect_streak: Number(read("wifi_reconnect_streak") || 0),
+        bridge_connected: Number(read("bridge_connected")) === 1,
+      },
+      uart: {
+        bytes_in: Number(read("fc_bytes_in") || 0), bytes_out: Number(read("fc_bytes_out") || 0),
+        vehicle_queue_drops: Number(read("vehicle_queue_drops") || 0),
+        bridge_tx_queue_drops: Number(read("bridge_tx_queue_drops") || read("bridge_tcp_queue_drops") || 0),
+        rx_overflow: Number(read("uart_rx_overflow") || 0),
       },
     };
   }
@@ -137,19 +176,30 @@ export class UsbTransport {
   async refresh() {
     const configOutput = await this.execute("config show");
     const statusOutput = await this.execute("status");
-    return { config: parseCliConfig(configOutput), status: this.parseStatus(statusOutput) };
+    const config = parseCliConfig(configOutput);
+    const status = this.parseStatus(statusOutput);
+    status.serial = config.serial_number || "";
+    return { config, status };
   }
 
   async save(desired, current) {
     const operations = configToCliOperations(current, desired);
     if (!operations.length) return { ok: true, reboot_required: false, operations: 0 };
-    for (const command of operations) {
-      this.onLog(`USB → ${command.replace(/(password) .+$/, "$1 ••••••••")}`);
-      const result = await this.execute(command);
-      if (!/OK saved; reboot required/.test(result)) {
-        const deviceError = result.match(/ERR[^\r\n]*/)?.[0] || "设备拒绝了配置";
-        throw new Error(deviceError);
+    const begin = await this.execute("config begin");
+    if (!/OK transaction begun/.test(begin)) throw new Error(begin.match(/ERR[^\r\n]*/)?.[0] || "设备不支持原子配置事务");
+    try {
+      for (const command of operations) {
+        this.onLog(`USB → ${command.replace(/(password) .+$/, "$1 ••••••••")}`);
+        const result = await this.execute(command);
+        if (!/OK staged/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "设备拒绝了暂存配置");
       }
+      const validation = await this.execute("config validate");
+      if (!/OK valid/.test(validation)) throw new Error(validation.match(/ERR[^\r\n]*/)?.[0] || "暂存配置校验失败");
+      const commit = await this.execute("config commit");
+      if (!/OK committed; reboot required/.test(commit)) throw new Error(commit.match(/ERR[^\r\n]*/)?.[0] || "原子提交失败");
+    } catch (error) {
+      await this.execute("config abort").catch(() => {});
+      throw error;
     }
     return { ok: true, reboot_required: true, operations: operations.length };
   }
@@ -163,6 +213,23 @@ export class UsbTransport {
     const result = await this.execute("config reset");
     if (!/OK factory defaults saved/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "恢复出厂失败");
   }
+  async validate(desired, current) {
+    const operations = configToCliOperations(current, desired);
+    return { valid: true, operations: operations.length, warnings: {
+      network_disconnect: operations.some((item) => /wifi_|ssid|password/.test(item)),
+      usb_mode_change: operations.some((item) => /usb_mode|bridge_role/.test(item)),
+    } };
+  }
+  async wifiScan() {
+    const result = await this.execute("wifi scan", 18000);
+    const json = result.match(/\{\"networks\":[\s\S]*\}/)?.[0];
+    if (!json) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Wi‑Fi 扫描没有返回结果");
+    return JSON.parse(json);
+  }
+  async diagnostics() {
+    const status = this.parseStatus(await this.execute("status"));
+    return { status, clients: { unavailable_over_usb: true }, can: { unavailable_over_usb: true }, collected_at: new Date().toISOString() };
+  }
   async disconnect() {
     this.connected = false;
     try { await this.reader?.cancel(); } catch {}
@@ -171,5 +238,28 @@ export class UsbTransport {
     try { await this.port?.close(); } catch {}
     this.reader = null; this.writer = null; this.port = null;
     this.buffer = "";
+  }
+}
+
+export class HelperTransport extends WifiTransport {
+  constructor({ helperUrl, session, target, username, password, onLog }) {
+    super({ baseUrl: target, username, password, onLog });
+    this.helperUrl = helperUrl.replace(/\/$/, "");
+    this.session = session;
+    this.target = target;
+    this.type = "helper";
+  }
+  async call(path, options = {}) {
+    const response = await fetch(`${this.helperUrl}/helper/v1/proxy`, {
+      method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json", "X-AirLink-Session": this.session },
+      body: JSON.stringify({ target: this.target, path, method: options.method || "GET", username: this.username, password: this.password, body: options.body }),
+    });
+    const result = await response.json().catch(() => ({ error: response.statusText }));
+    if (!response.ok) {
+      if (response.status === 401) throw new Error("本地助手会话已失效或设备密码错误");
+      throw new Error(result.error || `本地助手代理失败：HTTP ${response.status}`);
+    }
+    return result;
   }
 }

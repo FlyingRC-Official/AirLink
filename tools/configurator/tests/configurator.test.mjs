@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { configToCliOperations, parseCliConfig, validateConfig } from "../public/js/config-model.js";
+import { configDiff, configToCliOperations, createProfile, evaluateLink, parseCliConfig, parseProfile, redactDiagnostics, validateConfig } from "../public/js/config-model.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -19,14 +19,46 @@ test("orders USB role transitions safely", () => {
   const current = { bridge_role: 2, wifi_mode: 1, usb_mode: 1, sta_ssid: "AIR", route_mode: 0, uart_baud: 115200, wifi_band: 1, udp_port: 14550, tcp_port: 5760, can_bitrate: 1000000, led_brightness: 25 };
   const desired = { ...current, bridge_role: 1, wifi_mode: 0, usb_mode: 0 };
   const commands = configToCliOperations(current, desired);
-  assert.equal(commands[0], "config set bridge_role off");
-  assert.equal(commands.at(-1), "config set bridge_role air");
+  assert.equal(commands[0], "config stage bridge_role off");
+  assert.equal(commands.at(-1), "config stage bridge_role air");
 });
 
 test("can clear an optional STA password over USB", () => {
   const current = { bridge_role: 0, wifi_mode: 0, usb_mode: 0, sta_password: "old-password", route_mode: 0, uart_baud: 115200, wifi_band: 1, udp_port: 14550, tcp_port: 5760, can_bitrate: 1000000, led_brightness: 25 };
   const desired = { ...current, sta_password: "" };
-  assert.ok(configToCliOperations(current, desired).includes("config set sta_password -"));
+  assert.ok(configToCliOperations(current, desired).includes("config stage sta_password -"));
+});
+
+test("renders a secret-safe change preview with connection risks", () => {
+  const rows = configDiff({ ap_ssid: "old", ap_password: "old-secret", usb_mode: 0 }, { ap_ssid: "new", ap_password: "new-secret", usb_mode: 1 });
+  assert.equal(rows.length, 3);
+  assert.equal(rows.find((row) => row.key === "ap_password").newValue, "will change");
+  assert.equal(rows.find((row) => row.key === "ap_password").secret, true);
+  assert.equal(rows.find((row) => row.key === "ap_ssid").networkRisk, true);
+  assert.equal(rows.find((row) => row.key === "usb_mode").usbRisk, true);
+  assert.doesNotMatch(JSON.stringify(rows), /new-secret|old-secret/);
+});
+
+test("profiles omit secrets and reject unknown schemas", () => {
+  const profile = createProfile({ ap_ssid: "AIR", ap_password: "secret-secret", admin_password: "admin-secret", generation: 3, udp_port: 14550 }, { firmware: "v0.3.1-dev" });
+  assert.equal(profile.schema, "airlink-config-profile/v1");
+  assert.equal(profile.config.ap_password, undefined);
+  assert.equal(profile.config.admin_password, undefined);
+  assert.equal(parseProfile(JSON.stringify(profile)).config.udp_port, 14550);
+  assert.throws(() => parseProfile({ schema: "unknown", config: {} }));
+});
+
+test("diagnostics redaction and passive link verdicts are deterministic", () => {
+  const report = redactDiagnostics({ password: "secret", nested: { authorization: "Basic abc", safe: 1 } });
+  assert.equal(report.password, "[REDACTED]");
+  assert.equal(report.nested.authorization, "[REDACTED]");
+  const checks = evaluateLink(
+    { uart: { bytes_in: 10, vehicle_queue_drops: 0, bridge_tx_queue_drops: 0 }, wifi: { reconnects_total: 1 } },
+    { fc_seen: true, uart: { bytes_in: 20, vehicle_queue_drops: 0, bridge_tx_queue_drops: 1 }, wifi: { reconnects_total: 1, bridge_connected: true } },
+    { bridge_role: 1 },
+  );
+  assert.equal(checks.find((item) => item.id === "fc").state, "pass");
+  assert.equal(checks.find((item) => item.id === "queues").state, "fail");
 });
 
 test("validates passwords, ports and USB character set", () => {
@@ -40,6 +72,11 @@ test("validates passwords, ports and USB character set", () => {
 test("does not persist passwords in browser storage", async () => {
   const source = await readFile(join(fileURLToPath(root), "public/js/main.js"), "utf8");
   assert.doesNotMatch(source, /localStorage|sessionStorage|indexedDB/);
+  const transports = await readFile(join(fileURLToPath(root), "public/js/transports.js"), "utf8");
+  assert.match(transports, /config begin/);
+  assert.match(transports, /config validate/);
+  assert.match(transports, /config commit/);
+  assert.match(transports, /config abort/);
 });
 
 test("page element ids are unique", async () => {
@@ -58,9 +95,25 @@ test("builds a portable single-file configurator", async () => {
   assert.match(bundle, /navigator\.serial\.requestPort/);
   assert.match(bundle, /fetch\(`\$\{this\.baseUrl\}\$\{path\}`/);
   assert.doesNotMatch(bundle, /localStorage|sessionStorage|indexedDB/);
+  assert.match(bundle, /airlink-config-profile\/v1/);
+  assert.match(bundle, /helper\/v1\/devices/);
+  assert.match(bundle, /wifi_scan|wifiScan/);
+  assert.match(bundle, /V0\.3\.1-DEV/);
+  assert.match(bundle, /Update from GitHub/);
+  assert.match(bundle, /Export redacted report/);
+  assert.match(bundle, /Confirm changes before saving/);
   const script = bundle.match(/<script>([\s\S]+)<\/script>/)?.[1];
   assert.ok(script);
   assert.doesNotThrow(() => new Function(script));
+});
+
+test("helper is loopback-only, session protected and proxy allowlisted", async () => {
+  const source = await readFile(join(fileURLToPath(root), "helper/main.go"), "utf8");
+  assert.match(source, /127\.0\.0\.1:0/);
+  assert.match(source, /X-AirLink-Session/);
+  assert.match(source, /IsPrivate\(\)/);
+  assert.match(source, /allowedProxy/);
+  assert.doesNotMatch(source, /ListenAndServe\(":/);
 });
 
 test("launchers open the HTML without Node.js", async () => {

@@ -3,6 +3,16 @@ setlocal
 title AirLink Configurator
 cd /d "%~dp0"
 set "PAGE=%~dp0AirLink-Configurator.html"
+set "HELPER=%~dp0AirLink-Configurator-Helper.exe"
+
+if exist "%HELPER%" (
+  if "%AIRLINK_CONFIGURATOR_DRY_RUN%"=="1" (
+    echo AirLink Windows helper launcher validation passed.
+    exit /b 0
+  )
+  start "" "%HELPER%"
+  exit /b 0
+)
 
 if not exist "%PAGE%" goto missing_page
 if "%AIRLINK_CONFIGURATOR_DRY_RUN%"=="1" (

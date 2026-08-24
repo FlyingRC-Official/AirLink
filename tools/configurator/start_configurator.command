@@ -3,6 +3,15 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 page="$script_dir/AirLink-Configurator.html"
+helper="$script_dir/AirLink-Configurator-Helper"
+
+if [ -x "$helper" ]; then
+  if [ "${AIRLINK_CONFIGURATOR_DRY_RUN:-0}" = "1" ]; then
+    printf 'AirLink macOS helper launcher validation passed.\n'
+    exit 0
+  fi
+  exec "$helper"
+fi
 
 if [ ! -f "$page" ]; then
   printf '\nMissing AirLink-Configurator.html. Keep the HTML file beside this launcher.\n\n' >&2

@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,4 +25,7 @@ html = html.replace("</title>", "</title>\n    <!-- 单文件离线版：CSS 与
 
 if (/<(script|link)[^>]+(?:src|href)=/i.test(html)) throw new Error("单文件仍包含外部资源引用");
 await writeFile(destination, html, "utf8");
+const helperStatic = join(root, "helper", "static");
+await mkdir(helperStatic, { recursive: true });
+await writeFile(join(helperStatic, "index.html"), html, "utf8");
 console.log(destination);

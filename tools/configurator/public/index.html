@@ -13,8 +13,9 @@
       <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="brand-copy">
         <strong>FLYINGRC</strong>
-        <span>AIRLINK CONFIGURATOR</span>
+        <span>AIRLINK CONFIGURATOR · V0.3.1-DEV</span>
       </div>
+      <button class="header-button" id="languageButton" type="button" aria-label="Switch language">EN</button>
       <div class="connection-pill offline" id="connectionPill"><i></i><span>未连接</span></div>
     </header>
 
@@ -50,6 +51,8 @@
                 <label>管理密码<input id="wifiPassword" type="password" autocomplete="current-password" /></label>
               </div>
               <button class="primary full" id="wifiConnectButton" type="button">连接模块</button>
+              <button class="secondary full" id="discoverButton" type="button" hidden>发现局域网模块</button>
+              <select id="discoveredDevices" aria-label="发现的 AirLink 模块" hidden><option value="">选择发现的模块</option></select>
               <p class="field-note">电脑需已连接 AirLink 热点或与模块处于同一局域网。</p>
             </div>
 
@@ -110,7 +113,7 @@
                   <label>频段<select id="wifiBand"><option value="0">自动</option><option value="1">2.4 GHz</option><option value="2">5 GHz</option></select></label>
                   <label>AP 名称<input id="apSsid" maxlength="32" /></label>
                   <label>AP 新密码<div class="password-field"><input id="apPassword" type="password" minlength="12" maxlength="63" placeholder="留空表示不修改" /><button type="button" data-toggle-password="apPassword">显示</button></div></label>
-                  <label>STA 名称<input id="staSsid" maxlength="32" placeholder="上游 Wi‑Fi 名称" /></label>
+                  <label>STA 名称<input id="staSsid" maxlength="32" placeholder="上游 Wi‑Fi 名称" /><button class="inline-action" id="wifiScanButton" type="button">扫描</button></label>
                   <label>STA 新密码<div class="password-field"><input id="staPassword" type="password" minlength="8" maxlength="63" placeholder="留空表示不修改" /><button type="button" data-toggle-password="staPassword">显示</button></div></label>
                 </div>
                 <p class="inline-note">AP+STA 共用一个信道；ESP32‑C5 不能同时使用两个频段。</p>
@@ -139,6 +142,35 @@
         </section>
       </div>
 
+      <section class="tool-grid">
+        <article class="panel tool-card">
+          <p class="eyebrow">DEPLOYMENT</p><h2>配置模板与批量部署</h2>
+          <p>模板默认不包含任何密码。使用本地助手发现多台模块后可逐台应用。</p>
+          <div class="tool-actions"><button id="exportProfileButton" type="button" disabled>导出模板</button><button id="importProfileButton" type="button">导入模板</button><button id="batchApplyButton" type="button" disabled>批量应用</button></div>
+          <input id="profileFile" type="file" accept="application/json,.json" hidden />
+          <pre id="batchResult" class="mini-output" aria-live="polite"></pre>
+        </article>
+        <article class="panel tool-card">
+          <p class="eyebrow">HEALTH</p><h2>诊断与链路测试</h2>
+          <p>执行被动 5 秒采样，不发送飞控命令或 CAN 数据。</p>
+          <div class="tool-actions"><button id="diagnosticsButton" type="button" disabled>读取完整诊断</button><button id="linkTestButton" type="button" disabled>一键链路测试</button><button id="exportDiagnosticsButton" type="button" disabled>导出脱敏报告</button></div>
+          <pre id="diagnosticsOutput" class="mini-output" aria-live="polite"></pre>
+        </article>
+        <article class="panel tool-card">
+          <p class="eyebrow">PAIRING</p><h2>空中端 / 地面端配对</h2>
+          <p>先连接并配置空中端，再用同一 SSID、密码和频段配置地面端。</p>
+          <div class="pair-fields"><input id="pairSsid" placeholder="配对 SSID" maxlength="32" /><input id="pairPassword" type="password" placeholder="配对密码（至少 12 位）" maxlength="63" /><select id="pairBand"><option value="1">2.4 GHz</option><option value="2">5 GHz</option></select></div>
+          <div class="tool-actions"><button id="pairAirButton" type="button" disabled>将当前设备设为空中端</button><button id="pairGroundButton" type="button" disabled>将当前设备设为地面端</button><button id="verifyPairButton" type="button" disabled>验证桥接</button></div>
+        </article>
+        <article class="panel tool-card">
+          <p class="eyebrow">FIRMWARE</p><h2>OTA 固件升级</h2>
+          <p>可直接读取固定 GitHub Prerelease，或选择本地 manifest 与 airlink.bin；上传前校验硬件、版本和 SHA-256。</p>
+          <div class="pair-fields"><input id="manifestFile" type="file" accept="application/json,.json" /><input id="firmwareFile" type="file" accept="application/octet-stream,.bin" /></div>
+          <div class="tool-actions"><button id="otaGithubButton" type="button" disabled>从 GitHub 升级</button><button id="otaButton" type="button" disabled>使用本地文件升级</button></div>
+          <progress id="otaProgress" max="1" value="0"></progress><span id="otaState">等待选择文件</span>
+        </article>
+      </section>
+
       <details class="panel diagnostics-panel">
         <summary><span><b>诊断记录</b><small>连接和配置操作日志</small></span><span>展开</span></summary>
         <div class="log-toolbar"><button id="copyLogButton" type="button">复制日志</button><button id="clearLogButton" type="button">清空</button></div>
@@ -147,6 +179,14 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <dialog id="changeDialog" aria-labelledby="changeDialogTitle">
+      <form method="dialog">
+        <h2 id="changeDialogTitle">保存前确认变更</h2>
+        <div id="changeWarnings" class="warning-list"></div>
+        <div class="change-table" id="changeTable"></div>
+        <div class="dialog-actions"><button value="cancel" class="secondary">取消</button><button value="confirm" class="primary">确认保存</button></div>
+      </form>
+    </dialog>
     <script type="module" src="/js/main.js"></script>
   </body>
 </html>
