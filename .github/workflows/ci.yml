@@ -1,0 +1,89 @@
+name: firmware-ci
+on: [push, pull_request]
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/usb_flasher/package-lock.json
+      - run: tests/run_host_tests.sh
+      - run: tests/check_web.sh
+      - run: python3 -m py_compile tools/airlink_factory.py
+      - name: Build and test cross-platform USB flasher
+        working-directory: tools/usb_flasher
+        run: |
+          npm ci
+          npm run build
+          npm test
+  flasher-platform:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: tools/usb_flasher
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/usb_flasher/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Validate Windows launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item www/AirLink-Flasher-v0.3.0-dev.html AirLink-Flasher-v0.3.0-dev.html
+          $env:AIRLINK_FLASHER_DRY_RUN = "1"
+          cmd /c start_flasher.bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate macOS launcher
+        if: runner.os == 'macOS'
+        run: |
+          cp www/AirLink-Flasher-v0.3.0-dev.html AirLink-Flasher-v0.3.0-dev.html
+          AIRLINK_FLASHER_DRY_RUN=1 ./start_flasher.command
+  esp-idf:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [release, recovery, factory-test]
+    container: espressif/idf:v6.0.2
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build firmware
+        run: |
+          source /opt/esp/idf/export.sh
+          idf.py set-target esp32c5
+          idf.py -B build-${{ matrix.variant }} -D SDKCONFIG=build-${{ matrix.variant }}/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.${{ matrix.variant }}" build
+      - if: matrix.variant == 'release'
+        run: |
+          source /opt/esp/idf/export.sh
+          package=$(tools/create_release.sh build-release ci)
+          python3 - "$package" <<'PY'
+          import pathlib, shlex, sys
+          root = pathlib.Path(sys.argv[1])
+          lines = (root / "flash_args").read_text().splitlines()[1:]
+          missing = [tokens[1] for line in lines if len(tokens := shlex.split(line)) == 2 and not (root / tokens[1]).is_file()]
+          if missing:
+              raise SystemExit(f"release flash_args references missing files: {missing}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airlink-${{ matrix.variant }}
+          path: |
+            build-${{ matrix.variant }}/airlink.bin
+            build-${{ matrix.variant }}/bootloader/bootloader.bin
+            build-${{ matrix.variant }}/partition_table/partition-table.bin

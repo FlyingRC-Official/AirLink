@@ -1,0 +1,19 @@
+{
+  "name": "airlink-usb-flasher",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 8765",
+    "build": "vite build && node scripts/build-single-file.mjs",
+    "preview": "vite preview --host 127.0.0.1 --port 8765",
+    "test": "node tests/validate_bundle.mjs"
+  },
+  "dependencies": {
+    "esptool-js": "0.6.1",
+    "spark-md5": "3.0.2"
+  },
+  "devDependencies": {
+    "vite": "8.2.2"
+  }
+}

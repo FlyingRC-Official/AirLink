@@ -1,0 +1,14 @@
+{
+  "name": "airlink-configurator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-single-file.mjs",
+    "start": "node scripts/build-single-file.mjs",
+    "test": "node scripts/build-single-file.mjs && node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

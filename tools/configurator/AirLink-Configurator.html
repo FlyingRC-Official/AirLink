@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eef2f5" />
+    <meta name="description" content="通过 Wi-Fi 或 USB 在本地配置 FlyingRC AirLink C5。" />
+    <title>AirLink 配置工具</title>
+    <!-- 单文件离线版：CSS 与 JavaScript 均已内嵌 -->
+    <style>:root {
+  color-scheme: light;
+  --ink: #17222a;
+  --muted: #65727a;
+  --paper: #f2f4f5;
+  --panel: #ffffff;
+  --line: #dce2e5;
+  --line-strong: #cbd3d7;
+  --orange: #f36a21;
+  --orange-dark: #cc4f0c;
+  --orange-soft: #fff1e8;
+  --navy: #192c38;
+  --green: #16835c;
+  --red: #c33f34;
+  --shadow: 0 18px 45px rgba(25, 44, 56, 0.08);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.5 Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.48; }
+
+.site-header {
+  height: 72px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 max(24px, calc((100vw - 1240px) / 2));
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(16px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand-mark { width: 34px; height: 34px; position: relative; display: grid; place-items: center; transform: skew(-9deg); }
+.brand-mark span { position: absolute; height: 5px; background: var(--orange); border-radius: 1px; }
+.brand-mark span:nth-child(1) { width: 28px; top: 7px; left: 1px; }
+.brand-mark span:nth-child(2) { width: 22px; top: 15px; left: 7px; }
+.brand-mark span:nth-child(3) { width: 16px; top: 23px; left: 13px; }
+.brand-copy { display: flex; flex-direction: column; letter-spacing: 0.09em; line-height: 1.1; }
+.brand-copy strong { font-size: 17px; }
+.brand-copy span { color: var(--muted); font-size: 9px; margin-top: 4px; letter-spacing: 0.18em; }
+.connection-pill { margin-left: auto; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; color: var(--muted); background: #fff; font-size: 13px; }
+.connection-pill i { width: 8px; height: 8px; border-radius: 50%; background: #a7b0b5; }
+.connection-pill.online { color: var(--green); border-color: #b9ded0; background: #f0faf6; }
+.connection-pill.online i { background: var(--green); box-shadow: 0 0 0 4px rgba(22, 131, 92, .12); }
+
+main { max-width: 1288px; margin: 0 auto; padding: 0 24px 42px; }
+.hero { min-height: 230px; display: flex; align-items: center; justify-content: space-between; overflow: hidden; }
+.eyebrow { margin: 0 0 5px; color: var(--orange-dark); letter-spacing: .18em; font-weight: 750; font-size: 10px; }
+.hero h1 { margin: 0; font-size: clamp(36px, 5vw, 62px); letter-spacing: -.04em; line-height: 1.05; }
+.hero-copy { max-width: 610px; margin: 15px 0 0; color: var(--muted); font-size: 16px; }
+.hero-signal { width: 250px; height: 180px; position: relative; margin-right: 42px; opacity: .88; }
+.orbit { position: absolute; border: 1px solid #d0d7da; border-radius: 50%; transform: rotate(-18deg); }
+.orbit-one { inset: 30px 18px; }
+.orbit-two { inset: 58px 54px; border-color: #f3b38f; }
+.signal-core { position: absolute; width: 44px; height: 44px; border: 8px solid var(--orange); border-radius: 8px 55% 8px 55%; transform: rotate(45deg); left: 104px; top: 67px; box-shadow: 0 0 0 14px rgba(243,106,33,.09); }
+
+.workspace { display: grid; grid-template-columns: 350px 1fr; gap: 20px; align-items: start; }
+.sidebar { display: grid; gap: 20px; position: sticky; top: 92px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }
+.connect-panel, .device-panel { padding: 22px; }
+.section-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
+.section-heading.compact { align-items: center; }
+h2, h3, p { margin-top: 0; }
+.section-heading h2, .content-header h2 { margin: 0; font-size: 21px; letter-spacing: -.02em; }
+.icon-button { border: 1px solid var(--line); width: 30px; height: 30px; border-radius: 50%; background: #fff; color: var(--muted); font-size: 22px; line-height: 1; }
+.text-button { border: 0; background: transparent; color: var(--orange-dark); padding: 4px; }
+
+.transport-tabs { display: grid; grid-template-columns: 1fr 1fr; padding: 4px; background: #eef1f2; border-radius: 8px; margin-bottom: 20px; }
+.transport-tab { border: 0; border-radius: 6px; padding: 10px; background: transparent; color: var(--muted); font-weight: 650; }
+.transport-tab.active { background: white; color: var(--ink); box-shadow: 0 2px 8px rgba(20, 32, 38, .08); }
+.tab-icon { color: var(--orange); font-size: 18px; margin-right: 6px; }
+.transport-panel label, .form-grid label { display: grid; gap: 7px; color: #536169; font-size: 13px; font-weight: 650; }
+.two-fields { display: grid; grid-template-columns: .75fr 1.25fr; gap: 10px; }
+input, select {
+  width: 100%;
+  height: 43px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: #fff;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+input:focus, select:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(243, 106, 33, .12); }
+.transport-panel label + label, .transport-panel .two-fields + button, .transport-panel > label + .two-fields { margin-top: 12px; }
+.field-note, .inline-note { margin: 10px 0 0; color: var(--muted); font-size: 12px; font-weight: 400; }
+.primary, .secondary { min-height: 42px; border-radius: 6px; padding: 0 17px; font-weight: 700; }
+.primary { border: 1px solid var(--orange); background: var(--orange); color: white; box-shadow: 0 6px 14px rgba(243,106,33,.18); }
+.primary:hover:not(:disabled) { background: var(--orange-dark); border-color: var(--orange-dark); }
+.secondary { border: 1px solid var(--line-strong); background: white; color: var(--ink); }
+.secondary:hover:not(:disabled) { border-color: #9ba7ad; background: #f8f9f9; }
+.full { width: 100%; margin-top: 16px; }
+.danger-text { color: var(--red); }
+.usb-illustration { height: 76px; border: 1px dashed var(--line-strong); background: #f8fafb; border-radius: 8px; display: grid; place-items: center; position: relative; overflow: hidden; }
+.usb-wire { width: 110px; height: 36px; border: 3px solid #cad2d6; border-left: 0; border-bottom: 0; border-radius: 0 30px 0 0; position: absolute; left: -8px; bottom: 0; }
+.usb-plug { border: 2px solid var(--orange); color: var(--orange-dark); border-radius: 4px; font-size: 11px; font-weight: 800; padding: 5px 8px; background: white; }
+.transport-panel > p { color: var(--muted); font-size: 13px; margin: 12px 0 0; }
+
+.empty-state { min-height: 150px; display: grid; place-items: center; align-content: center; color: #9ba5aa; text-align: center; }
+.empty-state span { font-size: 38px; color: #c7ced1; }
+.empty-state p { margin: 8px 0 0; font-size: 13px; }
+.status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.status-grid div { background: #fff; padding: 12px; display: grid; gap: 3px; min-width: 0; }
+.status-grid span { color: var(--muted); font-size: 11px; }
+.status-grid strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.content-panel { overflow: hidden; }
+.content-header { padding: 25px 28px 21px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+.content-header p:last-child { color: var(--muted); margin: 5px 0 0; font-size: 13px; }
+.unsaved-badge { color: var(--orange-dark); background: var(--orange-soft); border-radius: 999px; padding: 6px 10px; font-size: 12px; }
+.config-section { padding: 25px 28px; display: grid; grid-template-columns: 175px 1fr; gap: 28px; border-bottom: 1px solid var(--line); }
+.config-title { display: flex; gap: 12px; align-items: flex-start; }
+.config-title > span { color: var(--orange); font: 800 11px/1 monospace; padding-top: 5px; }
+.config-title h3 { margin: 0; font-size: 16px; }
+.config-title p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 18px; }
+.role-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; }
+.role-card { position: relative; border: 1px solid var(--line-strong); border-radius: 8px; padding: 16px 14px 14px; min-height: 105px; display: flex; flex-direction: column; cursor: pointer; transition: .15s; }
+.role-card:has(input:checked) { border-color: var(--orange); background: var(--orange-soft); box-shadow: inset 0 0 0 1px var(--orange); }
+.role-card input { position: absolute; opacity: 0; pointer-events: none; }
+.role-card strong { margin-top: 20px; font-size: 14px; }
+.role-card small { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.role-radio { position: absolute; width: 15px; height: 15px; border: 1px solid #adb7bc; border-radius: 50%; top: 13px; right: 13px; background: white; }
+.role-card:has(input:checked) .role-radio { border: 4px solid var(--orange); }
+.role-section .inline-note { grid-column: 2; }
+.password-field { display: flex; position: relative; }
+.password-field input { padding-right: 55px; }
+.password-field button { position: absolute; right: 6px; top: 7px; height: 29px; border: 0; background: transparent; color: var(--orange-dark); font-size: 12px; }
+.range-field { grid-template-columns: 1fr auto !important; }
+.range-field input { grid-column: 1 / -1; height: 18px; padding: 0; accent-color: var(--orange); }
+.range-field output { color: var(--orange-dark); }
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+fieldset:disabled { opacity: .58; }
+.action-bar { padding: 18px 28px; display: flex; justify-content: space-between; align-items: center; gap: 18px; background: #fafbfb; }
+.action-bar > div:first-child { display: grid; }
+.save-state { font-weight: 700; font-size: 13px; }
+.action-bar small { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.action-buttons { display: flex; gap: 9px; }
+
+.diagnostics-panel { margin-top: 20px; overflow: hidden; }
+.diagnostics-panel summary { list-style: none; padding: 17px 21px; cursor: pointer; display: flex; justify-content: space-between; }
+.diagnostics-panel summary::-webkit-details-marker { display: none; }
+.diagnostics-panel summary span:first-child { display: flex; gap: 13px; align-items: baseline; }
+.diagnostics-panel summary small { color: var(--muted); }
+.diagnostics-panel summary span:last-child { color: var(--orange-dark); font-size: 12px; }
+.log-toolbar { padding: 10px 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); display: flex; gap: 8px; }
+.log-toolbar button { border: 0; background: transparent; color: var(--muted); font-size: 12px; }
+#logOutput { margin: 0; padding: 17px 20px; min-height: 160px; max-height: 320px; overflow: auto; background: #14242e; color: #d7e3e9; font: 12px/1.7 "Cascadia Mono", Consolas, monospace; white-space: pre-wrap; }
+.toast { position: fixed; right: 24px; bottom: 24px; background: var(--navy); color: white; border-radius: 7px; padding: 12px 16px; box-shadow: 0 12px 35px rgba(0,0,0,.22); transform: translateY(20px); opacity: 0; pointer-events: none; transition: .2s; max-width: 360px; z-index: 20; }
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.error { background: #8d2d26; }
+
+@media (max-width: 980px) {
+  .workspace { grid-template-columns: 1fr; }
+  .sidebar { position: static; grid-template-columns: 1fr 1fr; }
+  .hero-signal { display: none; }
+  .hero { min-height: 190px; }
+}
+@media (max-width: 720px) {
+  main { padding: 0 14px 28px; }
+  .site-header { padding: 0 16px; height: 64px; }
+  .brand-copy span { display: none; }
+  .sidebar { grid-template-columns: 1fr; }
+  .config-section { grid-template-columns: 1fr; padding: 21px 18px; gap: 17px; }
+  .role-section .inline-note { grid-column: 1; }
+  .role-grid { grid-template-columns: 1fr; }
+  .role-card { min-height: 82px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .content-header { padding: 22px 18px; align-items: flex-start; }
+  .unsaved-badge { display: none; }
+  .action-bar { align-items: stretch; flex-direction: column; padding: 16px 18px; }
+  .action-buttons { display: grid; grid-template-columns: 1fr 1fr; }
+  .action-buttons .primary { grid-column: 1 / -1; grid-row: 1; }
+  .hero { min-height: 170px; }
+  .hero h1 { font-size: 40px; }
+}
+</style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-copy">
+        <strong>FLYINGRC</strong>
+        <span>AIRLINK CONFIGURATOR</span>
+      </div>
+      <div class="connection-pill offline" id="connectionPill"><i></i><span>未连接</span></div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">AIRLINK C5 MESH V1</p>
+          <h1>模块配置中心</h1>
+          <p class="hero-copy">通过本地 Wi‑Fi 或 USB 直接读取和修改模块参数。凭据与设备数据只在本机处理。</p>
+        </div>
+        <div class="hero-signal" aria-hidden="true">
+          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="signal-core"></div>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <section class="panel connect-panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">CONNECTION</p><h2>连接模块</h2></div>
+              <button class="icon-button" id="disconnectButton" type="button" title="断开连接" disabled>×</button>
+            </div>
+
+            <div class="transport-tabs" role="tablist" aria-label="连接方式">
+              <button class="transport-tab active" id="wifiTab" role="tab" aria-selected="true" type="button"><span class="tab-icon">⌁</span>Wi‑Fi</button>
+              <button class="transport-tab" id="usbTab" role="tab" aria-selected="false" type="button"><span class="tab-icon">↯</span>USB</button>
+            </div>
+
+            <div id="wifiPanel" class="transport-panel">
+              <label>模块地址<input id="wifiAddress" inputmode="url" value="http://192.168.4.1" autocomplete="url" /></label>
+              <div class="two-fields">
+                <label>用户名<input id="wifiUser" value="admin" autocomplete="username" /></label>
+                <label>管理密码<input id="wifiPassword" type="password" autocomplete="current-password" /></label>
+              </div>
+              <button class="primary full" id="wifiConnectButton" type="button">连接模块</button>
+              <p class="field-note">电脑需已连接 AirLink 热点或与模块处于同一局域网。</p>
+            </div>
+
+            <div id="usbPanel" class="transport-panel" hidden>
+              <div class="usb-illustration"><span class="usb-wire"></span><span class="usb-plug">USB</span></div>
+              <p>使用数据线连接模块。Chrome 或 Edge 会弹出串口选择窗口。</p>
+              <button class="primary full" id="usbConnectButton" type="button">选择 USB 设备</button>
+              <p class="field-note" id="usbSupportNote">USB 模式为 MAVLink 时，工具会临时切换到配置终端。</p>
+            </div>
+          </section>
+
+          <section class="panel device-panel">
+            <div class="section-heading compact"><div><p class="eyebrow">DEVICE</p><h2>设备状态</h2></div><button class="text-button" id="refreshButton" disabled type="button">刷新</button></div>
+            <div class="empty-state" id="statusEmpty"><span>◎</span><p>连接后显示实时状态</p></div>
+            <div id="statusGrid" class="status-grid" hidden>
+              <div><span>固件</span><strong id="statusFirmware">—</strong></div>
+              <div><span>飞控</span><strong id="statusFlight">—</strong></div>
+              <div><span>Wi‑Fi</span><strong id="statusWifi">—</strong></div>
+              <div><span>客户端</span><strong id="statusClients">—</strong></div>
+              <div><span>运行时间</span><strong id="statusUptime">—</strong></div>
+              <div><span>配置版本</span><strong id="statusGeneration">—</strong></div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="content-panel panel">
+          <div class="content-header">
+            <div><p class="eyebrow">CONFIGURATION</p><h2>运行参数</h2><p>所有更改保存到模块，重启后生效。</p></div>
+            <span class="unsaved-badge" id="unsavedBadge" hidden>有未保存更改</span>
+          </div>
+
+          <form id="configForm">
+            <fieldset disabled>
+              <section class="config-section role-section">
+                <div class="config-title"><span>01</span><div><h3>工作角色</h3><p>选择模块在链路中的用途</p></div></div>
+                <div class="role-grid">
+                  <label class="role-card"><input type="radio" name="bridge_role" value="0" checked /><span class="role-radio"></span><strong>网关</strong><small>UART ↔ Wi‑Fi / USB</small></label>
+                  <label class="role-card"><input type="radio" name="bridge_role" value="1" /><span class="role-radio"></span><strong>空中端</strong><small>连接飞控，创建热点</small></label>
+                  <label class="role-card"><input type="radio" name="bridge_role" value="2" /><span class="role-radio"></span><strong>地面端</strong><small>连接热点，USB 输出</small></label>
+                </div>
+                <p class="inline-note" id="roleHint">网关模式可独立设置 Wi‑Fi 与 USB 工作方式。</p>
+              </section>
+
+              <section class="config-section">
+                <div class="config-title"><span>02</span><div><h3>遥测链路</h3><p>MAVLink 路由与飞控串口</p></div></div>
+                <div class="form-grid">
+                  <label>路由模式<select id="routeMode"><option value="0">MAVLink（推荐）</option><option value="1">透明传输</option></select></label>
+                  <label>UART 波特率<select id="uartBaud"><option>57600</option><option>115200</option><option>230400</option><option>460800</option><option>921600</option></select></label>
+                  <label>UDP 端口<input id="udpPort" type="number" min="1" max="65535" /></label>
+                  <label>TCP 端口<input id="tcpPort" type="number" min="1" max="65535" /></label>
+                </div>
+              </section>
+
+              <section class="config-section">
+                <div class="config-title"><span>03</span><div><h3>无线网络</h3><p>热点与上游网络设置</p></div></div>
+                <div class="form-grid">
+                  <label>Wi‑Fi 模式<select id="wifiMode"><option value="0">AP 热点</option><option value="1">STA 客户端</option><option value="2">AP + STA</option></select></label>
+                  <label>频段<select id="wifiBand"><option value="0">自动</option><option value="1">2.4 GHz</option><option value="2">5 GHz</option></select></label>
+                  <label>AP 名称<input id="apSsid" maxlength="32" /></label>
+                  <label>AP 新密码<div class="password-field"><input id="apPassword" type="password" minlength="12" maxlength="63" placeholder="留空表示不修改" /><button type="button" data-toggle-password="apPassword">显示</button></div></label>
+                  <label>STA 名称<input id="staSsid" maxlength="32" placeholder="上游 Wi‑Fi 名称" /></label>
+                  <label>STA 新密码<div class="password-field"><input id="staPassword" type="password" minlength="8" maxlength="63" placeholder="留空表示不修改" /><button type="button" data-toggle-password="staPassword">显示</button></div></label>
+                </div>
+                <p class="inline-note">AP+STA 共用一个信道；ESP32‑C5 不能同时使用两个频段。</p>
+              </section>
+
+              <section class="config-section">
+                <div class="config-title"><span>04</span><div><h3>设备接口</h3><p>USB、CAN 与指示灯</p></div></div>
+                <div class="form-grid">
+                  <label>USB 模式<select id="usbMode"><option value="0">日志 / 配置 CLI</option><option value="1">MAVLink</option></select></label>
+                  <label>CAN 速率<select id="canBitrate"><option value="125000">125 kbit/s</option><option value="250000">250 kbit/s</option><option value="500000">500 kbit/s</option><option value="1000000">1 Mbit/s</option></select></label>
+                  <label class="range-field">LED 亮度 <output id="brightnessOutput">25%</output><input id="ledBrightness" type="range" min="0" max="100" value="25" /></label>
+                  <label id="adminPasswordLabel">管理员新密码<div class="password-field"><input id="adminPassword" type="password" minlength="12" maxlength="63" placeholder="仅 USB 可修改" /><button type="button" data-toggle-password="adminPassword">显示</button></div></label>
+                </div>
+              </section>
+            </fieldset>
+          </form>
+
+          <div class="action-bar">
+            <div><span class="save-state" id="saveState">请先连接模块</span><small id="saveDetail">参数不会存储在浏览器中</small></div>
+            <div class="action-buttons">
+              <button class="secondary danger-text" id="factoryResetButton" disabled type="button">恢复出厂</button>
+              <button class="secondary" id="saveButton" disabled type="button">保存配置</button>
+              <button class="primary" id="saveRebootButton" disabled type="button">保存并重启</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <details class="panel diagnostics-panel">
+        <summary><span><b>诊断记录</b><small>连接和配置操作日志</small></span><span>展开</span></summary>
+        <div class="log-toolbar"><button id="copyLogButton" type="button">复制日志</button><button id="clearLogButton" type="button">清空</button></div>
+        <pre id="logOutput" aria-live="polite"></pre>
+      </details>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script>const enumMaps = {
+  route_mode: [["mavlink", "transparent"], [0, 1]],
+  wifi_mode: [["ap", "sta", "apsta"], [0, 1, 2]],
+  wifi_band: [["auto", "2g", "5g"], [0, 1, 2]],
+  usb_mode: [["log", "mavlink"], [0, 1]],
+  bridge_role: [["off", "air", "ground"], [0, 1, 2]],
+};
+
+const numericKeys = new Set(["uart_baud", "udp_port", "tcp_port", "can_bitrate", "led_brightness"]);
+
+function parseCliConfig(output) {
+  const config = {};
+  for (const line of String(output).split(/\r?\n/)) {
+    const match = line.match(/^([a-z_]+)=(.*)$/);
+    if (!match) continue;
+    const [, key, raw] = match;
+    if (numericKeys.has(key)) config[key] = Number(raw);
+    else if (enumMaps[key]) config[key] = enumMaps[key][0].indexOf(raw);
+    else config[key] = raw;
+  }
+  const generation = String(output).match(/config generation=(\d+)/);
+  if (generation) config.generation = Number(generation[1]);
+  return config;
+}
+
+function validateConfig(config, transport) {
+  const errors = [];
+  if (!config.ap_ssid || config.ap_ssid.length > 32) errors.push("AP 名称需为 1–32 个字符");
+  if ((config.wifi_mode === 1 || config.wifi_mode === 2) && !config.sta_ssid) errors.push("STA 模式需要填写上游 Wi‑Fi 名称");
+  if (config.ap_password && (config.ap_password.length < 12 || config.ap_password.length > 63)) errors.push("AP 新密码需为 12–63 个字符");
+  if (config.sta_password && (config.sta_password.length < 8 || config.sta_password.length > 63)) errors.push("STA 新密码需为 8–63 个字符");
+  if (config.admin_password && (config.admin_password.length < 12 || config.admin_password.length > 63)) errors.push("管理员新密码需为 12–63 个字符");
+  for (const [name, value] of [["UDP", config.udp_port], ["TCP", config.tcp_port]]) {
+    if (!Number.isInteger(value) || value < 1 || value > 65535) errors.push(`${name} 端口需为 1–65535`);
+  }
+  if (transport === "usb") {
+    for (const value of [config.ap_ssid, config.ap_password, config.sta_ssid, config.sta_password, config.admin_password]) {
+      if (value && !/^[\x20-\x7e]+$/.test(value)) {
+        errors.push("USB 配置中的名称和密码暂只支持 ASCII 字符");
+        break;
+      }
+    }
+  }
+  return [...new Set(errors)];
+}
+
+function cliValue(key, value) {
+  if (enumMaps[key]) return enumMaps[key][0][Number(value)];
+  if ((key === "sta_ssid" || key === "sta_password") && value === "") return "-";
+  return String(value);
+}
+
+function configToCliOperations(current, desired) {
+  const operations = [];
+  const add = (key, value) => operations.push(`config set ${key} ${cliValue(key, value)}`);
+  const currentRole = Number(current.bridge_role);
+  const desiredRole = Number(desired.bridge_role);
+
+  if (currentRole !== 0 && currentRole !== desiredRole) add("bridge_role", 0);
+  if ((Number(current.wifi_mode) === 1 || Number(current.wifi_mode) === 2) && Number(desired.wifi_mode) === 0 && !desired.sta_ssid) {
+    add("wifi_mode", 0);
+  }
+
+  for (const key of ["ap_ssid", "ap_password", "sta_ssid", "sta_password"]) {
+    const clearingStaValue = (key === "sta_ssid" || key === "sta_password") && desired[key] === "" && current[key];
+    if (desired[key] !== undefined && (desired[key] !== "" || clearingStaValue) && desired[key] !== current[key]) add(key, desired[key]);
+  }
+  for (const key of ["route_mode", "uart_baud", "wifi_band", "udp_port", "tcp_port", "can_bitrate", "led_brightness"]) {
+    if (desired[key] !== undefined && Number(desired[key]) !== Number(current[key])) add(key, desired[key]);
+  }
+  if (desired.admin_password) add("admin_password", desired.admin_password);
+
+  if (desiredRole === 0) {
+    if (Number(desired.wifi_mode) !== Number(current.wifi_mode) || currentRole !== 0) add("wifi_mode", desired.wifi_mode);
+    if (Number(desired.usb_mode) !== Number(current.usb_mode) || currentRole !== 0) add("usb_mode", desired.usb_mode);
+  } else if (desiredRole !== currentRole || currentRole === 0) {
+    add("bridge_role", desiredRole);
+  }
+  return [...new Set(operations)];
+}
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+class WifiTransport {
+  constructor({ baseUrl, username, password, onLog }) {
+    this.baseUrl = /^https?:\/\//i.test(baseUrl) ? baseUrl.replace(/\/$/, "") : `http://${baseUrl.replace(/\/$/, "")}`;
+    this.username = username || "admin";
+    this.password = password;
+    this.onLog = onLog;
+    this.type = "wifi";
+  }
+
+  async call(path, options = {}) {
+    const authorization = btoa(unescape(encodeURIComponent(`${this.username}:${this.password}`)));
+    const headers = { Authorization: `Basic ${authorization}`, Accept: "application/json", ...(options.headers || {}) };
+    let body;
+    if (options.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      body = JSON.stringify(options.body);
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6500);
+    let response;
+    try {
+      response = await fetch(`${this.baseUrl}${path}`, {
+        method: options.method || "GET", headers, body, cache: "no-store", credentials: "omit", signal: controller.signal,
+      });
+    } catch (error) {
+      if (error.name === "AbortError") throw new Error("连接设备超时");
+      throw new Error("无法访问模块。请确认电脑已连接 AirLink 网络，且模块固件支持本地 HTML 配置。", { cause: error });
+    } finally {
+      clearTimeout(timeout);
+    }
+    const result = await response.json().catch(() => ({ error: response.statusText }));
+    if (!response.ok) {
+      if (response.status === 401) throw new Error("用户名或管理密码错误");
+      if (response.status === 423) throw new Error(result.error === "flight_controller_armed" ? "飞控处于解锁状态，禁止修改" : "设备当前为只读模式");
+      throw new Error(result.error || result.message || `HTTP ${response.status}`);
+    }
+    return result;
+  }
+
+  async connect() {
+    this.onLog(`正在通过 Wi‑Fi 连接 ${this.baseUrl}`);
+    const [status, config] = await Promise.all([this.call("/api/v1/status"), this.call("/api/v1/config")]);
+    this.onLog("Wi‑Fi 连接与身份验证成功", "success");
+    return { status, config };
+  }
+  async refresh() { return { status: await this.call("/api/v1/status"), config: await this.call("/api/v1/config") }; }
+  async save(config) { return this.call("/api/v1/config", { method: "PUT", body: config }); }
+  async reboot() { return this.call("/api/v1/actions/reboot", { method: "POST" }); }
+  async factoryReset() { return this.call("/api/v1/actions/factory-reset", { method: "POST" }); }
+  async disconnect() { this.password = ""; }
+}
+
+class UsbTransport {
+  constructor({ onLog, onRaw }) {
+    this.onLog = onLog;
+    this.onRaw = onRaw;
+    this.type = "usb";
+    this.buffer = "";
+    this.connected = false;
+  }
+
+  async write(text) {
+    if (!this.writer) throw new Error("USB 串口未连接");
+    await this.writer.write(new TextEncoder().encode(text));
+  }
+
+  async pump() {
+    const decoder = new TextDecoder();
+    try {
+      while (this.reader) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        this.buffer += text;
+        this.onRaw(text);
+      }
+    } catch (error) {
+      if (this.connected) this.onLog(`USB 读取中断：${error.message}`, "error");
+    }
+  }
+
+  async execute(command, timeout = 5000) {
+    const start = this.buffer.length;
+    await this.write(`${command}\r\n`);
+    return this.waitForPrompt(start, timeout, command);
+  }
+
+  async waitForPrompt(start, timeout = 5000, command = "设备") {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      const result = this.buffer.slice(start);
+      const prompt = result.match(/\r?\n> /);
+      if (prompt) return result.slice(0, prompt.index + prompt[0].length);
+      await delay(35);
+    }
+    throw new Error(`设备未响应命令：${command}`);
+  }
+
+  async connect() {
+    if (!("serial" in navigator)) throw new Error("当前浏览器不支持 Web Serial，请使用 Chrome 或 Edge");
+    this.onLog("请选择 Espressif USB Serial/JTAG 设备");
+    this.port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    await this.port.open({ baudRate: 115200, bufferSize: 4096 });
+    this.writer = this.port.writable.getWriter();
+    this.reader = this.port.readable.getReader();
+    this.connected = true;
+    this.pump();
+    const escapeStart = this.buffer.length;
+    await this.write("+++AIRLINK-CLI\r\n");
+    await this.waitForPrompt(escapeStart, 2200, "进入配置终端").catch(() => delay(200));
+    const output = await this.execute("config show");
+    const config = parseCliConfig(output);
+    if (config.route_mode === -1 || config.route_mode === undefined) throw new Error("未识别到 AirLink 配置终端，请按 RESET 后重试");
+    const statusOutput = await this.execute("status");
+    this.onLog("USB 配置终端已连接", "success");
+    return { config, status: this.parseStatus(statusOutput) };
+  }
+
+  parseStatus(output) {
+    const read = (key) => String(output).match(new RegExp(`${key}=([^\\r\\n]+)`))?.[1];
+    return {
+      firmware: "AirLink C5 · USB",
+      fc_seen: Number(read("fc_seen")) === 1,
+      fc_armed: Number(read("fc_armed")) === 1,
+      wifi: {
+        rssi: Number(read("wifi_rssi") || 0),
+        udp_clients: Number(read("udp_clients") || 0),
+        tcp_clients: Number(read("tcp_clients") || 0),
+      },
+    };
+  }
+
+  async refresh() {
+    const configOutput = await this.execute("config show");
+    const statusOutput = await this.execute("status");
+    return { config: parseCliConfig(configOutput), status: this.parseStatus(statusOutput) };
+  }
+
+  async save(desired, current) {
+    const operations = configToCliOperations(current, desired);
+    if (!operations.length) return { ok: true, reboot_required: false, operations: 0 };
+    for (const command of operations) {
+      this.onLog(`USB → ${command.replace(/(password) .+$/, "$1 ••••••••")}`);
+      const result = await this.execute(command);
+      if (!/OK saved; reboot required/.test(result)) {
+        const deviceError = result.match(/ERR[^\r\n]*/)?.[0] || "设备拒绝了配置";
+        throw new Error(deviceError);
+      }
+    }
+    return { ok: true, reboot_required: true, operations: operations.length };
+  }
+
+  async reboot() {
+    try { await this.execute("reboot", 1800); } catch (error) {
+      if (!/未响应/.test(error.message)) throw error;
+    }
+  }
+  async factoryReset() {
+    const result = await this.execute("config reset");
+    if (!/OK factory defaults saved/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "恢复出厂失败");
+  }
+  async disconnect() {
+    this.connected = false;
+    try { await this.reader?.cancel(); } catch {}
+    try { this.reader?.releaseLock(); } catch {}
+    try { this.writer?.releaseLock(); } catch {}
+    try { await this.port?.close(); } catch {}
+    this.reader = null; this.writer = null; this.port = null;
+    this.buffer = "";
+  }
+}
+
+const $ = (id) => document.getElementById(id);
+const ui = Object.fromEntries([
+  "connectionPill", "disconnectButton", "wifiTab", "usbTab", "wifiPanel", "usbPanel", "wifiAddress", "wifiUser", "wifiPassword",
+  "wifiConnectButton", "usbConnectButton", "usbSupportNote", "refreshButton", "statusEmpty", "statusGrid", "statusFirmware", "statusFlight",
+  "statusWifi", "statusClients", "statusUptime", "statusGeneration", "configForm", "routeMode", "uartBaud", "udpPort", "tcpPort", "wifiMode",
+  "wifiBand", "apSsid", "apPassword", "staSsid", "staPassword", "usbMode", "canBitrate", "ledBrightness", "brightnessOutput",
+  "adminPassword", "adminPasswordLabel", "roleHint", "unsavedBadge", "saveState", "saveDetail", "factoryResetButton", "saveButton",
+  "saveRebootButton", "copyLogButton", "clearLogButton", "logOutput", "toast",
+].map((id) => [id, $(id)]));
+
+let selectedTransport = "wifi";
+let transport = null;
+let currentConfig = null;
+let busy = false;
+let refreshTimer = null;
+let toastTimer = null;
+
+function timestamp() {
+  return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
+}
+function log(message, level = "info") {
+  const safe = String(message).replace(/(password[= ]+)[^\s]+/gi, "$1••••••••");
+  ui.logOutput.textContent += `[${timestamp()}] ${level === "error" ? "错误 · " : ""}${safe}\n`;
+  ui.logOutput.scrollTop = ui.logOutput.scrollHeight;
+}
+function toast(message, error = false) {
+  clearTimeout(toastTimer);
+  ui.toast.textContent = message;
+  ui.toast.className = `toast show${error ? " error" : ""}`;
+  toastTimer = setTimeout(() => { ui.toast.className = "toast"; }, 3200);
+}
+function setBusy(value, label) {
+  busy = value;
+  for (const button of [ui.wifiConnectButton, ui.usbConnectButton, ui.refreshButton, ui.saveButton, ui.saveRebootButton, ui.factoryResetButton]) {
+    if (button) button.disabled = value || (!transport && ![ui.wifiConnectButton, ui.usbConnectButton].includes(button));
+  }
+  if (label) ui.saveState.textContent = label;
+}
+function setConnected(connected) {
+  ui.connectionPill.className = `connection-pill ${connected ? "online" : "offline"}`;
+  ui.connectionPill.querySelector("span").textContent = connected ? `${transport.type === "wifi" ? "Wi‑Fi" : "USB"} 已连接` : "未连接";
+  ui.disconnectButton.disabled = !connected;
+  ui.refreshButton.disabled = !connected;
+  ui.saveButton.disabled = !connected;
+  ui.saveRebootButton.disabled = !connected;
+  ui.factoryResetButton.disabled = !connected;
+  ui.configForm.querySelector("fieldset").disabled = !connected;
+  ui.saveState.textContent = connected ? "参数已从模块读取" : "请先连接模块";
+  ui.saveDetail.textContent = connected ? "修改后请保存，重启后生效" : "参数不会存储在浏览器中";
+  if (!connected) {
+    ui.statusGrid.hidden = true;
+    ui.statusEmpty.hidden = false;
+    ui.unsavedBadge.hidden = true;
+  }
+}
+
+function selectTransport(type) {
+  if (transport || busy) return;
+  selectedTransport = type;
+  const wifi = type === "wifi";
+  ui.wifiTab.classList.toggle("active", wifi);
+  ui.usbTab.classList.toggle("active", !wifi);
+  ui.wifiTab.setAttribute("aria-selected", String(wifi));
+  ui.usbTab.setAttribute("aria-selected", String(!wifi));
+  ui.wifiPanel.hidden = !wifi;
+  ui.usbPanel.hidden = wifi;
+}
+
+function formConfig() {
+  return {
+    route_mode: Number(ui.routeMode.value), uart_baud: Number(ui.uartBaud.value),
+    wifi_mode: Number(ui.wifiMode.value), wifi_band: Number(ui.wifiBand.value),
+    ap_ssid: ui.apSsid.value.trim(), ap_password: ui.apPassword.value,
+    sta_ssid: ui.staSsid.value.trim(), sta_password: ui.staPassword.value,
+    udp_port: Number(ui.udpPort.value), tcp_port: Number(ui.tcpPort.value),
+    usb_mode: Number(ui.usbMode.value), bridge_role: Number(document.querySelector('input[name="bridge_role"]:checked').value),
+    can_bitrate: Number(ui.canBitrate.value), led_brightness: Number(ui.ledBrightness.value),
+    admin_password: ui.adminPassword.value,
+  };
+}
+
+function applyConfig(config) {
+  currentConfig = { ...config };
+  ui.routeMode.value = config.route_mode ?? 0;
+  ui.uartBaud.value = config.uart_baud ?? 115200;
+  ui.wifiMode.value = config.wifi_mode ?? 0;
+  ui.wifiBand.value = config.wifi_band ?? 0;
+  ui.apSsid.value = config.ap_ssid || "";
+  ui.apPassword.value = transport?.type === "usb" ? config.ap_password || "" : "";
+  ui.staSsid.value = config.sta_ssid || "";
+  ui.staPassword.value = transport?.type === "usb" ? config.sta_password || "" : "";
+  ui.udpPort.value = config.udp_port ?? 14550;
+  ui.tcpPort.value = config.tcp_port ?? 5760;
+  ui.usbMode.value = config.usb_mode ?? 0;
+  ui.canBitrate.value = config.can_bitrate ?? 1000000;
+  ui.ledBrightness.value = config.led_brightness ?? 25;
+  ui.brightnessOutput.value = `${ui.ledBrightness.value}%`;
+  const role = document.querySelector(`input[name="bridge_role"][value="${config.bridge_role ?? 0}"]`);
+  if (role) role.checked = true;
+  ui.adminPassword.value = "";
+  ui.adminPassword.disabled = transport?.type !== "usb";
+  updateRoleConstraints();
+  ui.unsavedBadge.hidden = true;
+}
+
+function updateStatus(status = {}, config = currentConfig || {}) {
+  const wifi = status.wifi || {};
+  ui.statusFirmware.textContent = status.firmware || "AirLink C5";
+  ui.statusFlight.textContent = status.fc_armed ? "已解锁" : status.fc_seen ? "已连接" : "无数据";
+  ui.statusWifi.textContent = Number.isFinite(wifi.rssi) && wifi.rssi !== 0 ? `${wifi.rssi} dBm` : "已启动";
+  ui.statusClients.textContent = `${wifi.udp_clients || 0} UDP / ${wifi.tcp_clients || 0} TCP`;
+  const seconds = Number(status.uptime_s || 0);
+  ui.statusUptime.textContent = seconds ? `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m` : "—";
+  ui.statusGeneration.textContent = config.generation !== undefined ? `#${config.generation}` : "—";
+  ui.statusEmpty.hidden = true;
+  ui.statusGrid.hidden = false;
+}
+
+function updateRoleConstraints() {
+  const role = Number(document.querySelector('input[name="bridge_role"]:checked').value);
+  if (role === 1) {
+    ui.wifiMode.value = "0"; ui.usbMode.value = "0";
+    ui.wifiMode.disabled = true; ui.usbMode.disabled = true;
+    ui.roleHint.textContent = "空中端固定使用 AP 热点与 USB 日志模式。";
+  } else if (role === 2) {
+    ui.wifiMode.value = "1"; ui.usbMode.value = "1";
+    ui.wifiMode.disabled = true; ui.usbMode.disabled = true;
+    ui.roleHint.textContent = "地面端固定连接 STA 网络，并通过 USB 输出 MAVLink。";
+  } else {
+    ui.wifiMode.disabled = false; ui.usbMode.disabled = false;
+    ui.roleHint.textContent = "网关模式可独立设置 Wi‑Fi 与 USB 工作方式。";
+  }
+}
+
+async function connect(type) {
+  if (busy || transport) return;
+  setBusy(true, "正在连接…");
+  try {
+    transport = type === "wifi"
+      ? new WifiTransport({ baseUrl: ui.wifiAddress.value.trim(), username: ui.wifiUser.value.trim(), password: ui.wifiPassword.value, onLog: log })
+      : new UsbTransport({ onLog: log, onRaw: () => {} });
+    const result = await transport.connect();
+    applyConfig(result.config);
+    updateStatus(result.status, result.config);
+    setConnected(true);
+    toast("模块连接成功");
+    if (transport.type === "wifi") refreshTimer = setInterval(refreshStatusOnly, 5000);
+  } catch (error) {
+    log(error.message, "error");
+    toast(error.message, true);
+    await transport?.disconnect().catch(() => {});
+    transport = null;
+    setConnected(false);
+  } finally { setBusy(false); }
+}
+
+async function disconnect() {
+  clearInterval(refreshTimer); refreshTimer = null;
+  const active = transport;
+  transport = null;
+  try { await active?.disconnect(); } catch {}
+  currentConfig = null;
+  setConnected(false);
+  log("连接已断开");
+}
+
+async function refresh(showToast = true) {
+  if (!transport || busy) return;
+  setBusy(true, "正在读取参数…");
+  try {
+    const result = await transport.refresh();
+    applyConfig(result.config);
+    updateStatus(result.status, result.config);
+    ui.saveState.textContent = "参数已从模块读取";
+    if (showToast) toast("参数已刷新");
+  } catch (error) {
+    log(error.message, "error");
+    if (showToast) toast(error.message, true);
+  } finally { setBusy(false); }
+}
+
+async function refreshStatusOnly() {
+  if (!transport || transport.type !== "wifi" || busy) return;
+  try {
+    const status = await transport.call("/api/v1/status");
+    updateStatus(status, currentConfig);
+  } catch (error) {
+    clearInterval(refreshTimer); refreshTimer = null;
+    log(`状态刷新失败：${error.message}`, "error");
+  }
+}
+
+async function save(rebootAfter = false) {
+  if (!transport || busy) return;
+  const desired = formConfig();
+  const errors = validateConfig(desired, transport.type);
+  if (errors.length) { toast(errors[0], true); log(errors.join("；"), "error"); return; }
+  setBusy(true, "正在保存配置…");
+  try {
+    const payload = { ...desired };
+    if (transport.type === "wifi") {
+      delete payload.admin_password;
+      if (!payload.ap_password) delete payload.ap_password;
+      if (!payload.sta_password) delete payload.sta_password;
+    }
+    const result = await transport.save(payload, currentConfig);
+    log(`配置保存成功${result.operations ? `，写入 ${result.operations} 项` : ""}`, "success");
+    currentConfig = { ...currentConfig, ...desired, ap_password: desired.ap_password || currentConfig.ap_password, sta_password: desired.sta_password || currentConfig.sta_password };
+    ui.apPassword.value = transport.type === "usb" ? currentConfig.ap_password || "" : "";
+    ui.staPassword.value = transport.type === "usb" ? currentConfig.sta_password || "" : "";
+    ui.adminPassword.value = "";
+    ui.unsavedBadge.hidden = true;
+    ui.saveState.textContent = result.reboot_required === false ? "配置未发生变化" : "配置已保存，等待重启";
+    if (rebootAfter) {
+      if (!confirm("配置已保存。现在重启模块使参数生效？")) return;
+      await transport.reboot();
+      toast("模块正在重启");
+      log("已发送重启命令", "success");
+      await disconnect();
+    } else toast(result.reboot_required === false ? "没有需要保存的更改" : "配置已保存");
+  } catch (error) {
+    log(error.message, "error"); toast(error.message, true);
+  } finally { setBusy(false); }
+}
+
+async function factoryReset() {
+  if (!transport || busy || !confirm("确定恢复出厂配置？此操作不会清除工厂身份，但会覆盖当前参数。")) return;
+  setBusy(true, "正在恢复出厂配置…");
+  try {
+    await transport.factoryReset();
+    log("出厂配置已写入，重启后生效", "success"); toast("已恢复出厂配置，请重启模块");
+    ui.saveState.textContent = "出厂配置已写入，等待重启";
+  } catch (error) { log(error.message, "error"); toast(error.message, true); }
+  finally { setBusy(false); }
+}
+
+ui.wifiTab.addEventListener("click", () => selectTransport("wifi"));
+ui.usbTab.addEventListener("click", () => selectTransport("usb"));
+ui.wifiConnectButton.addEventListener("click", () => connect("wifi"));
+ui.usbConnectButton.addEventListener("click", () => connect("usb"));
+ui.disconnectButton.addEventListener("click", disconnect);
+ui.refreshButton.addEventListener("click", () => refresh());
+ui.saveButton.addEventListener("click", () => save(false));
+ui.saveRebootButton.addEventListener("click", () => save(true));
+ui.factoryResetButton.addEventListener("click", factoryReset);
+ui.ledBrightness.addEventListener("input", () => { ui.brightnessOutput.value = `${ui.ledBrightness.value}%`; });
+ui.configForm.addEventListener("input", () => { if (transport) { ui.unsavedBadge.hidden = false; ui.saveState.textContent = "有未保存的更改"; } });
+for (const role of document.querySelectorAll('input[name="bridge_role"]')) role.addEventListener("change", updateRoleConstraints);
+for (const button of document.querySelectorAll("[data-toggle-password]")) button.addEventListener("click", () => {
+  const input = $(button.dataset.togglePassword); const reveal = input.type === "password";
+  input.type = reveal ? "text" : "password"; button.textContent = reveal ? "隐藏" : "显示";
+});
+ui.clearLogButton.addEventListener("click", () => { ui.logOutput.textContent = ""; });
+ui.copyLogButton.addEventListener("click", async () => { await navigator.clipboard.writeText(ui.logOutput.textContent); toast("日志已复制"); });
+window.addEventListener("beforeunload", () => { transport?.disconnect(); });
+
+if (!("serial" in navigator)) ui.usbSupportNote.textContent = "当前浏览器不支持 USB 串口，请使用桌面版 Chrome 或 Edge。";
+log("本地配置工具已就绪，等待连接模块");</script>
+  </body>
+</html>
