@@ -14,6 +14,8 @@ typedef struct {
     uint8_t udp_clients;
     uint8_t tcp_clients;
     uint32_t reconnects;
+    bool bridge_connected;
+    uint32_t bridge_reconnects;
 } airlink_wifi_status_t;
 
 esp_err_t airlink_wifi_start(const airlink_config_t *config);

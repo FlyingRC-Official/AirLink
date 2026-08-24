@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eef2f5" />
+    <meta name="description" content="通过 Wi-Fi 或 USB 在本地配置 FlyingRC AirLink C5。" />
+    <title>AirLink 配置工具</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="brand-copy">
+        <strong>FLYINGRC</strong>
+        <span>AIRLINK CONFIGURATOR</span>
+      </div>
+      <div class="connection-pill offline" id="connectionPill"><i></i><span>未连接</span></div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">AIRLINK C5 MESH V1</p>
+          <h1>模块配置中心</h1>
+          <p class="hero-copy">通过本地 Wi‑Fi 或 USB 直接读取和修改模块参数。凭据与设备数据只在本机处理。</p>
+        </div>
+        <div class="hero-signal" aria-hidden="true">
+          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="signal-core"></div>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <aside class="sidebar">
+          <section class="panel connect-panel">
+            <div class="section-heading">
+              <div><p class="eyebrow">CONNECTION</p><h2>连接模块</h2></div>
+              <button class="icon-button" id="disconnectButton" type="button" title="断开连接" disabled>×</button>
+            </div>
+
+            <div class="transport-tabs" role="tablist" aria-label="连接方式">
+              <button class="transport-tab active" id="wifiTab" role="tab" aria-selected="true" type="button"><span class="tab-icon">⌁</span>Wi‑Fi</button>
+              <button class="transport-tab" id="usbTab" role="tab" aria-selected="false" type="button"><span class="tab-icon">↯</span>USB</button>
+            </div>
+
+            <div id="wifiPanel" class="transport-panel">
+              <label>模块地址<input id="wifiAddress" inputmode="url" value="http://192.168.4.1" autocomplete="url" /></label>
+              <div class="two-fields">
+                <label>用户名<input id="wifiUser" value="admin" autocomplete="username" /></label>
+                <label>管理密码<input id="wifiPassword" type="password" autocomplete="current-password" /></label>
+              </div>
+              <button class="primary full" id="wifiConnectButton" type="button">连接模块</button>
+              <p class="field-note">电脑需已连接 AirLink 热点或与模块处于同一局域网。</p>
+            </div>
+
+            <div id="usbPanel" class="transport-panel" hidden>
+              <div class="usb-illustration"><span class="usb-wire"></span><span class="usb-plug">USB</span></div>
+              <p>使用数据线连接模块。Chrome 或 Edge 会弹出串口选择窗口。</p>
+              <button class="primary full" id="usbConnectButton" type="button">选择 USB 设备</button>
+              <p class="field-note" id="usbSupportNote">USB 模式为 MAVLink 时，工具会临时切换到配置终端。</p>
+            </div>
+          </section>
+
+          <section class="panel device-panel">
+            <div class="section-heading compact"><div><p class="eyebrow">DEVICE</p><h2>设备状态</h2></div><button class="text-button" id="refreshButton" disabled type="button">刷新</button></div>
+            <div class="empty-state" id="statusEmpty"><span>◎</span><p>连接后显示实时状态</p></div>
+            <div id="statusGrid" class="status-grid" hidden>
+              <div><span>固件</span><strong id="statusFirmware">—</strong></div>
+              <div><span>飞控</span><strong id="statusFlight">—</strong></div>
+              <div><span>Wi‑Fi</span><strong id="statusWifi">—</strong></div>
+              <div><span>客户端</span><strong id="statusClients">—</strong></div>
+              <div><span>运行时间</span><strong id="statusUptime">—</strong></div>
+              <div><span>配置版本</span><strong id="statusGeneration">—</strong></div>
+            </div>
+          </section>
+        </aside>
+
+        <section class="content-panel panel">
+          <div class="content-header">
+            <div><p class="eyebrow">CONFIGURATION</p><h2>运行参数</h2><p>所有更改保存到模块，重启后生效。</p></div>
+            <span class="unsaved-badge" id="unsavedBadge" hidden>有未保存更改</span>
+          </div>
+
+          <form id="configForm">
+            <fieldset disabled>
+              <section class="config-section role-section">
+                <div class="config-title"><span>01</span><div><h3>工作角色</h3><p>选择模块在链路中的用途</p></div></div>
+                <div class="role-grid">
+                  <label class="role-card"><input type="radio" name="bridge_role" value="0" checked /><span class="role-radio"></span><strong>网关</strong><small>UART ↔ Wi‑Fi / USB</small></label>
+                  <label class="role-card"><input type="radio" name="bridge_role" value="1" /><span class="role-radio"></span><strong>空中端</strong><small>连接飞控，创建热点</small></label>
+                  <label class="role-card"><input type="radio" name="bridge_role" value="2" /><span class="role-radio"></span><strong>地面端</strong><small>连接热点，USB 输出</small></label>
+                </div>
+                <p class="inline-note" id="roleHint">网关模式可独立设置 Wi‑Fi 与 USB 工作方式。</p>
+              </section>
+
+              <section class="config-section">
+                <div class="config-title"><span>02</span><div><h3>遥测链路</h3><p>MAVLink 路由与飞控串口</p></div></div>
+                <div class="form-grid">
+                  <label>路由模式<select id="routeMode"><option value="0">MAVLink（推荐）</option><option value="1">透明传输</option></select></label>
+                  <label>UART 波特率<select id="uartBaud"><option>57600</option><option>115200</option><option>230400</option><option>460800</option><option>921600</option></select></label>
+                  <label>UDP 端口<input id="udpPort" type="number" min="1" max="65535" /></label>
+                  <label>TCP 端口<input id="tcpPort" type="number" min="1" max="65535" /></label>
+                </div>
+              </section>
+
+              <section class="config-section">
+                <div class="config-title"><span>03</span><div><h3>无线网络</h3><p>热点与上游网络设置</p></div></div>
+                <div class="form-grid">
+                  <label>Wi‑Fi 模式<select id="wifiMode"><option value="0">AP 热点</option><option value="1">STA 客户端</option><option value="2">AP + STA</option></select></label>
+                  <label>频段<select id="wifiBand"><option value="0">自动</option><option value="1">2.4 GHz</option><option value="2">5 GHz</option></select></label>
+                  <label>AP 名称<input id="apSsid" maxlength="32" /></label>
+                  <label>AP 新密码<div class="password-field"><input id="apPassword" type="password" minlength="12" maxlength="63" placeholder="留空表示不修改" /><button type="button" data-toggle-password="apPassword">显示</button></div></label>
+                  <label>STA 名称<input id="staSsid" maxlength="32" placeholder="上游 Wi‑Fi 名称" /></label>
+                  <label>STA 新密码<div class="password-field"><input id="staPassword" type="password" minlength="8" maxlength="63" placeholder="留空表示不修改" /><button type="button" data-toggle-password="staPassword">显示</button></div></label>
+                </div>
+                <p class="inline-note">AP+STA 共用一个信道；ESP32‑C5 不能同时使用两个频段。</p>
+              </section>
+
+              <section class="config-section">
+                <div class="config-title"><span>04</span><div><h3>设备接口</h3><p>USB、CAN 与指示灯</p></div></div>
+                <div class="form-grid">
+                  <label>USB 模式<select id="usbMode"><option value="0">日志 / 配置 CLI</option><option value="1">MAVLink</option></select></label>
+                  <label>CAN 速率<select id="canBitrate"><option value="125000">125 kbit/s</option><option value="250000">250 kbit/s</option><option value="500000">500 kbit/s</option><option value="1000000">1 Mbit/s</option></select></label>
+                  <label class="range-field">LED 亮度 <output id="brightnessOutput">25%</output><input id="ledBrightness" type="range" min="0" max="100" value="25" /></label>
+                  <label id="adminPasswordLabel">管理员新密码<div class="password-field"><input id="adminPassword" type="password" minlength="12" maxlength="63" placeholder="仅 USB 可修改" /><button type="button" data-toggle-password="adminPassword">显示</button></div></label>
+                </div>
+              </section>
+            </fieldset>
+          </form>
+
+          <div class="action-bar">
+            <div><span class="save-state" id="saveState">请先连接模块</span><small id="saveDetail">参数不会存储在浏览器中</small></div>
+            <div class="action-buttons">
+              <button class="secondary danger-text" id="factoryResetButton" disabled type="button">恢复出厂</button>
+              <button class="secondary" id="saveButton" disabled type="button">保存配置</button>
+              <button class="primary" id="saveRebootButton" disabled type="button">保存并重启</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <details class="panel diagnostics-panel">
+        <summary><span><b>诊断记录</b><small>连接和配置操作日志</small></span><span>展开</span></summary>
+        <div class="log-toolbar"><button id="copyLogButton" type="button">复制日志</button><button id="clearLogButton" type="button">清空</button></div>
+        <pre id="logOutput" aria-live="polite"></pre>
+      </details>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>

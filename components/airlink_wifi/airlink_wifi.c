@@ -27,7 +27,11 @@
 
 #define UDP_TIMEOUT_US INT64_C(30000000)
 #define TCP_STALL_TIMEOUT_US INT64_C(10000000)
-#define NET_PACKET_QUEUE 24
+#define BRIDGE_CONNECT_TIMEOUT_US INT64_C(2000000)
+#define NET_PACKET_QUEUE 64
+#define NETWORK_TASK_PRIORITY 19
+#define BRIDGE_TASK_PRIORITY 17
+#define TCP_TX_BURST 8U
 
 typedef struct {
     uint16_t length;
@@ -64,6 +68,89 @@ static udp_client_t s_udp[AIRLINK_MAX_UDP_CLIENTS];
 static tcp_client_t s_tcp[AIRLINK_MAX_TCP_CLIENTS];
 static esp_timer_handle_t s_reconnect_timer;
 static uint32_t s_reconnect_attempts;
+static int s_bridge_socket = -1;
+static QueueHandle_t s_bridge_tx_queue;
+
+static esp_err_t bridge_send(const uint8_t *data, size_t length,
+                             bool high_priority, void *context)
+{
+    (void)high_priority;
+    (void)context;
+    if (!s_status.bridge_connected || s_bridge_tx_queue == NULL ||
+        length > AIRLINK_MAX_FRAME_SIZE) return ESP_ERR_INVALID_STATE;
+    net_packet_t packet = {.length = (uint16_t)length};
+    memcpy(packet.data, data, length);
+    return xQueueSend(s_bridge_tx_queue, &packet, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+static void bridge_disconnect(void)
+{
+    if (s_status.bridge_connected) {
+        airlink_router_unregister(AIRLINK_ENDPOINT_ID_BRIDGE);
+    }
+    s_status.bridge_connected = false;
+    if (s_bridge_socket >= 0) {
+        shutdown(s_bridge_socket, SHUT_RDWR);
+        close(s_bridge_socket);
+        s_bridge_socket = -1;
+    }
+    if (s_bridge_tx_queue != NULL) xQueueReset(s_bridge_tx_queue);
+}
+
+static bool bridge_connect(void)
+{
+    const int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (fd < 0) return false;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    int yes = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+    struct sockaddr_in peer = {
+        .sin_family = AF_INET,
+        .sin_port = htons(s_config.tcp_port),
+        .sin_addr.s_addr = inet_addr("192.168.4.1"),
+    };
+    const int result = connect(fd, (struct sockaddr *)&peer, sizeof(peer));
+    if (result != 0 && errno != EINPROGRESS) {
+        close(fd);
+        return false;
+    }
+    if (result != 0) {
+        fd_set write_set;
+        FD_ZERO(&write_set);
+        FD_SET(fd, &write_set);
+        struct timeval timeout = {
+            .tv_sec = (long)(BRIDGE_CONNECT_TIMEOUT_US / INT64_C(1000000)),
+            .tv_usec = (long)(BRIDGE_CONNECT_TIMEOUT_US % INT64_C(1000000)),
+        };
+        if (select(fd + 1, NULL, &write_set, NULL, &timeout) <= 0) {
+            close(fd);
+            return false;
+        }
+        int socket_error = 0;
+        socklen_t error_length = sizeof(socket_error);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) != 0 ||
+            socket_error != 0) {
+            close(fd);
+            return false;
+        }
+    }
+    s_bridge_socket = fd;
+    const airlink_router_endpoint_t endpoint = {
+        .id = AIRLINK_ENDPOINT_ID_BRIDGE,
+        .type = AIRLINK_ENDPOINT_BRIDGE,
+        .send = bridge_send,
+        .name = "airlink-bridge",
+    };
+    if (airlink_router_register(&endpoint) != ESP_OK) {
+        close(fd);
+        s_bridge_socket = -1;
+        return false;
+    }
+    s_status.bridge_connected = true;
+    ESP_LOGI(TAG, "bridge connected to 192.168.4.1:%u", s_config.tcp_port);
+    return true;
+}
 
 static void recount_clients(void)
 {
@@ -191,6 +278,17 @@ static void accept_tcp(void)
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+    /* A USB reset on the ground unit can drop Wi-Fi without a TCP FIN.  DHCP
+     * assigns the reconnecting station the same AP-local address, so replace
+     * its stale socket immediately instead of consuming both client slots
+     * until keepalive expires. */
+    for (size_t i = 0; i < AIRLINK_MAX_TCP_CLIENTS; ++i) {
+        if (s_tcp[i].used &&
+            s_tcp[i].address.sin_addr.s_addr == address.sin_addr.s_addr) {
+            ESP_LOGI(TAG, "replacing stale TCP client from reconnecting station");
+            close_tcp(&s_tcp[i]);
+        }
+    }
     for (size_t i = 0; i < AIRLINK_MAX_TCP_CLIENTS; ++i) {
         if (s_tcp[i].used) continue;
         tcp_client_t *client = &s_tcp[i];
@@ -260,6 +358,42 @@ fail:
     return ESP_FAIL;
 }
 
+static void service_tcp_tx(tcp_client_t *client)
+{
+    for (unsigned burst = 0; burst < TCP_TX_BURST && client->used; ++burst) {
+        if (!client->has_pending &&
+            xQueueReceive(client->tx_queue, &client->pending, 0) == pdTRUE) {
+            client->pending_offset = 0;
+            client->pending_progress_us = esp_timer_get_time();
+            client->has_pending = true;
+        }
+        if (!client->has_pending) return;
+
+        const size_t remaining = client->pending.length - client->pending_offset;
+        const ssize_t sent = send(client->socket_fd,
+                                  client->pending.data + client->pending_offset,
+                                  remaining, MSG_DONTWAIT);
+        if (sent > 0) {
+            client->pending_offset += (size_t)sent;
+            client->pending_progress_us = esp_timer_get_time();
+            if (client->pending_offset == client->pending.length) {
+                client->has_pending = false;
+                continue;
+            }
+            continue;
+        }
+        if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            close_tcp(client);
+            return;
+        }
+        if (esp_timer_get_time() - client->pending_progress_us > TCP_STALL_TIMEOUT_US) {
+            ESP_LOGW(TAG, "closing stalled TCP client");
+            close_tcp(client);
+        }
+        return;
+    }
+}
+
 static void network_task(void *argument)
 {
     (void)argument;
@@ -295,29 +429,71 @@ static void network_task(void *argument)
                 close_tcp(client);
                 continue;
             }
-            if (!client->has_pending && xQueueReceive(client->tx_queue, &client->pending, 0) == pdTRUE) {
-                client->pending_offset = 0;
-                client->pending_progress_us = esp_timer_get_time();
-                client->has_pending = true;
-            }
-            if (client->has_pending) {
-                const size_t remaining = client->pending.length - client->pending_offset;
-                const ssize_t sent = send(client->socket_fd,
-                                          client->pending.data + client->pending_offset,
-                                          remaining, MSG_DONTWAIT);
-                if (sent > 0) {
-                    client->pending_offset += (size_t)sent;
-                    client->pending_progress_us = esp_timer_get_time();
-                    if (client->pending_offset == client->pending.length) client->has_pending = false;
-                } else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-                    close_tcp(client);
-                } else if (esp_timer_get_time() - client->pending_progress_us > TCP_STALL_TIMEOUT_US) {
-                    ESP_LOGW(TAG, "closing stalled TCP client");
-                    close_tcp(client);
-                }
-            }
+            service_tcp_tx(client);
         }
         expire_udp();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+}
+
+static void bridge_task(void *argument)
+{
+    (void)argument;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    uint8_t rx[1024];
+    net_packet_t pending = {0};
+    size_t pending_offset = 0;
+    int64_t pending_progress_us = 0;
+    bool has_pending = false;
+    while (true) {
+        ESP_ERROR_CHECK(esp_task_wdt_reset());
+        if (!s_status.sta_connected) {
+            bridge_disconnect();
+            has_pending = false;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        if (s_bridge_socket < 0) {
+            if (!bridge_connect()) {
+                s_status.bridge_reconnects++;
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
+            has_pending = false;
+        }
+
+        const ssize_t received = recv(s_bridge_socket, rx, sizeof(rx), MSG_DONTWAIT);
+        if (received > 0) {
+            airlink_router_ingest(AIRLINK_ENDPOINT_ID_BRIDGE, rx, (size_t)received);
+        } else if (received == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            ESP_LOGW(TAG, "bridge disconnected");
+            bridge_disconnect();
+            s_status.bridge_reconnects++;
+            has_pending = false;
+            continue;
+        }
+
+        if (!has_pending && xQueueReceive(s_bridge_tx_queue, &pending, 0) == pdTRUE) {
+            pending_offset = 0;
+            pending_progress_us = esp_timer_get_time();
+            has_pending = true;
+        }
+        if (has_pending) {
+            const size_t remaining = pending.length - pending_offset;
+            const ssize_t sent = send(s_bridge_socket, pending.data + pending_offset,
+                                      remaining, MSG_DONTWAIT);
+            if (sent > 0) {
+                pending_offset += (size_t)sent;
+                pending_progress_us = esp_timer_get_time();
+                if (pending_offset == pending.length) has_pending = false;
+            } else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK) ||
+                       esp_timer_get_time() - pending_progress_us > TCP_STALL_TIMEOUT_US) {
+                ESP_LOGW(TAG, "bridge transmit stalled");
+                bridge_disconnect();
+                s_status.bridge_reconnects++;
+                has_pending = false;
+            }
+        }
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 }
@@ -413,8 +589,17 @@ esp_err_t airlink_wifi_start(const airlink_config_t *config)
      * band; calling this earlier returns ESP_ERR_WIFI_NOT_STARTED. */
     ESP_RETURN_ON_ERROR(esp_wifi_set_band_mode(band), TAG, "Wi-Fi band");
     if (config->wifi_mode != AIRLINK_WIFI_AP) esp_wifi_connect();
+    if (config->bridge_enabled && config->bridge_role == AIRLINK_BRIDGE_GROUND) {
+        s_bridge_tx_queue = xQueueCreate(NET_PACKET_QUEUE, sizeof(net_packet_t));
+        if (s_bridge_tx_queue == NULL) return ESP_ERR_NO_MEM;
+        return xTaskCreate(bridge_task, "airlink_bridge", 6144, NULL,
+                           BRIDGE_TASK_PRIORITY, NULL) == pdPASS ?
+               ESP_OK : ESP_ERR_NO_MEM;
+    }
     ESP_RETURN_ON_ERROR(open_sockets(), TAG, "telemetry sockets");
-    return xTaskCreate(network_task, "telemetry_net", 6144, NULL, 15, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    return xTaskCreate(network_task, "telemetry_net", 6144, NULL,
+                       NETWORK_TASK_PRIORITY, NULL) == pdPASS ?
+           ESP_OK : ESP_ERR_NO_MEM;
 }
 
 void airlink_wifi_get_status(airlink_wifi_status_t *status)
@@ -426,6 +611,9 @@ void airlink_wifi_get_status(airlink_wifi_status_t *status)
         s_status.channel = record.primary;
     }
     *status = s_status;
+    if (s_config.bridge_enabled && s_config.bridge_role == AIRLINK_BRIDGE_AIR) {
+        status->bridge_connected = status->tcp_clients > 0;
+    }
 }
 
 size_t airlink_wifi_clients_json(char *output, size_t capacity)

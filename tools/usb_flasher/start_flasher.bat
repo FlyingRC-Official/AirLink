@@ -2,7 +2,7 @@
 setlocal
 title AirLink C5 USB Flasher
 cd /d "%~dp0"
-set "PAGE=%~dp0AirLink-Flasher-v0.2.1-dev.html"
+set "PAGE=%~dp0AirLink-Flasher-v0.3.0-dev.html"
 
 if not exist "%PAGE%" goto missing_page
 if "%AIRLINK_FLASHER_DRY_RUN%"=="1" (
@@ -38,7 +38,7 @@ exit /b 1
 
 :missing_page
 echo.
-echo Missing AirLink-Flasher-v0.2.1-dev.html. Extract the complete ZIP before running this launcher.
+echo Missing AirLink-Flasher-v0.3.0-dev.html. Extract the complete ZIP before running this launcher.
 echo.
 pause
 exit /b 1

@@ -2,10 +2,10 @@
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-page="$script_dir/AirLink-Flasher-v0.2.1-dev.html"
+page="$script_dir/AirLink-Flasher-v0.3.0-dev.html"
 
 if [ ! -f "$page" ]; then
-    printf '\nMissing AirLink-Flasher-v0.2.1-dev.html. Extract the complete ZIP first.\n\n' >&2
+    printf '\nMissing AirLink-Flasher-v0.3.0-dev.html. Extract the complete ZIP first.\n\n' >&2
     printf 'Press Return to close. '
     read -r _
     exit 1

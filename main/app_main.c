@@ -61,7 +61,11 @@ void app_main(void)
 
     /* Recovery keeps only USB LOG_CLI, Wi-Fi configuration access and the web
      * service alive. Telemetry UART/CAN endpoints never start in recovery. */
-    if (hardware_ok && !recovery) ESP_ERROR_CHECK(airlink_uart_start(snapshot.value.uart_baud));
+    const bool ground_bridge = snapshot.value.bridge_enabled &&
+                               snapshot.value.bridge_role == AIRLINK_BRIDGE_GROUND;
+    if (hardware_ok && !recovery && !ground_bridge) {
+        ESP_ERROR_CHECK(airlink_uart_start(snapshot.value.uart_baud));
+    }
     if (hardware_ok && !recovery) ESP_ERROR_CHECK(airlink_can_start(snapshot.value.can_bitrate, factory_test));
     ESP_ERROR_CHECK(airlink_wifi_start(&snapshot.value));
     ESP_ERROR_CHECK(airlink_web_start(recovery, !hardware_ok));

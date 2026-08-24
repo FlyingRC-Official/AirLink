@@ -15,6 +15,7 @@ flowchart LR
     Router <--> UDP["Wi-Fi UDP 14550"]
     Router <--> TCP["Wi-Fi TCP 5760"]
     Router <--> USB["USB MAVLink mode"]
+    Air["Air role: UART + AP"] <--> Ground["Ground role: STA + USB"]
     CAN["CAN / DroneCAN"] --> Diagnostics["Status and diagnostics"]
     Router --> Diagnostics
     Diagnostics --> Web["Web UI / API"]
@@ -32,6 +33,9 @@ flowchart LR
   control/command traffic a dedicated high-priority UART queue.
 - Supports AP, STA and AP+STA Wi-Fi modes, up to eight UDP clients and two TCP
   clients. Inactive or stalled clients are reclaimed automatically.
+- Uses one universal firmware image for gateway, air-bridge and ground-bridge
+  roles. The air unit carries flight-controller UART over an authenticated AP;
+  the ground unit reconnects as a STA and presents the link as USB MAVLink.
 - Serves an authenticated bilingual Web UI for status, configuration, client
   inspection, CAN diagnostics, reboot, factory reset and OTA.
 - Stores configuration in CRC-protected, generation-numbered NVS A/B records.
@@ -105,16 +109,31 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ### Local USB flasher
 
-The `v0.2.1-dev` release includes a single-file local Web Serial flasher for
-Windows and macOS. Extract `AirLink-USB-Flasher-v0.2.1-dev.zip`, then run
+The `v0.3.0-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.0-dev.zip`, then run
 `start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
 Edge is required; Safari is not supported. The page downloads only the fixed
-`v0.2.1-dev` firmware from the matching GitHub tag and accepts it only when the
+`v0.3.0-dev` firmware from the matching GitHub tag and accepts it only when the
 manifest SHA-256 and GitHub Release digest both match.
 
 The flasher never performs a whole-chip erase and never writes normal NVS or
 factory identity. A blank device receives only the one-time password record at
 `0x2C000`. Passwords, logs and USB data remain local to the browser.
+
+### Local Wi-Fi / USB configurator
+
+`tools/configurator` provides a zero-dependency local Web configurator for
+Windows and macOS. It presents the same parameter form for both transports:
+
+- Wi-Fi uses a localhost-only proxy to the authenticated `/api/v1` device API.
+- USB uses Web Serial and the release-firmware `LOG_CLI`; a unit configured for
+  USB MAVLink is temporarily switched to its CLI with the supported escape
+  sequence.
+
+Run `start_configurator.bat` on Windows or `start_configurator.command` on
+macOS. Node.js 18+ is required; USB configuration additionally requires desktop
+Chrome or Edge. Credentials and device data stay in local memory and are not
+stored in browser storage.
 
 ## Operation
 
@@ -128,6 +147,59 @@ factory identity. A blank device receives only the one-time password record at
 USB has one CDC channel. `LOG_CLI` provides logs and recovery commands;
 `MAVLINK` provides MAVLink only. Switching mode requires a restart. UART0 test
 pads remain the independent rescue log at 115200 baud.
+
+### USB configuration CLI
+
+Release firmware can be configured and diagnosed locally over the USB
+`LOG_CLI`; Wi-Fi access is not required. Run `status` to read flight-controller,
+UART and Wi-Fi link counters, `config show` to read the active settings and
+`config help` to list every writable key. For example:
+
+```text
+config set uart_baud 115200
+config set route_mode mavlink
+config set wifi_mode ap
+config set wifi_band 2g
+config set udp_port 14550
+config set tcp_port 5760
+config set bridge_role off
+reboot
+```
+
+`config set` and `config reset` save to the CRC-protected NVS A/B records. The
+new settings take effect after `reboot`. Configuration writes and reboot remain
+blocked while an armed flight-controller heartbeat is latched. `config show`
+includes credentials because USB is treated as a local physical management
+interface; protect physical access to deployed devices.
+
+### Two-AirLink wireless bridge
+
+Both units run the same firmware. Configure the unit attached to the flight
+controller as the air side:
+
+```text
+config set route_mode mavlink
+config set wifi_band 2g
+config set bridge_role air
+reboot
+```
+
+On the USB-attached ground unit, copy the air unit's AP SSID and password, then
+select the ground role:
+
+```text
+config set sta_ssid AIR_UNIT_SSID
+config set sta_password AIR_UNIT_PASSWORD
+config set wifi_band 2g
+config set bridge_role ground
+reboot
+```
+
+Selecting `air` automatically selects Wi-Fi AP plus USB `LOG_CLI`; selecting
+`ground` selects Wi-Fi STA plus USB MAVLink. The Web UI exposes the same role
+selector for later configuration over Wi-Fi. In ground mode, writing the exact
+ASCII sequence `+++AIRLINK-CLI\r\n` to USB temporarily switches that boot into
+the local CLI; reboot restores the configured USB MAVLink mode.
 
 ### Runtime and build modes
 

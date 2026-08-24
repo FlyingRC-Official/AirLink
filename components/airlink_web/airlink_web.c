@@ -74,8 +74,10 @@ static esp_err_t status_handler(httpd_req_t *request)
     airlink_diag_status_t diag; airlink_diag_get(&diag);
     airlink_wifi_status_t wifi; airlink_wifi_get_status(&wifi);
     airlink_uart_health_t uart; airlink_uart_get_health(&uart);
-    airlink_endpoint_stats_t fc; airlink_router_get_stats(AIRLINK_ENDPOINT_ID_FC_UART, &fc);
     airlink_config_t active_config; airlink_config_get(&active_config);
+    const uint8_t vehicle_endpoint = active_config.bridge_role == AIRLINK_BRIDGE_GROUND ?
+                                     AIRLINK_ENDPOINT_ID_BRIDGE : AIRLINK_ENDPOINT_ID_FC_UART;
+    airlink_endpoint_stats_t fc; airlink_router_get_stats(vehicle_endpoint, &fc);
     const esp_app_desc_t *app = esp_app_get_description();
     char json[1536];
     snprintf(json, sizeof(json),
@@ -84,7 +86,8 @@ static esp_err_t status_handler(httpd_req_t *request)
         "\"fc_seen\":%s,\"fc_armed\":%s,\"uptime_s\":%" PRIu32 ","
         "\"free_heap\":%" PRIu32 ",\"min_heap\":%" PRIu32 ",\"boot_count\":%" PRIu32 ","
         "\"reset_reason\":%" PRIu32 ",\"wifi\":{\"ap\":%s,\"sta\":%s,\"rssi\":%d,"
-        "\"channel\":%u,\"udp_clients\":%u,\"tcp_clients\":%u},"
+        "\"channel\":%u,\"udp_clients\":%u,\"tcp_clients\":%u,"
+        "\"bridge_connected\":%s},"
         "\"uart\":{\"bytes_in\":%" PRIu64 ",\"bytes_out\":%" PRIu64 ",\"frames_in\":%" PRIu32
         ",\"drops\":%" PRIu32 ",\"rx_overflow\":%" PRIu32 "}}",
         AIRLINK_PRODUCT_NAME, AIRLINK_HARDWARE_ID, app->version, app->date, app->time,
@@ -94,6 +97,7 @@ static esp_err_t status_handler(httpd_req_t *request)
         diag.uptime_seconds, diag.free_heap, diag.minimum_free_heap, diag.boot_count,
         diag.reset_reason, wifi.ap_started ? "true" : "false", wifi.sta_connected ? "true" : "false",
         wifi.rssi, wifi.channel, wifi.udp_clients, wifi.tcp_clients,
+        wifi.bridge_connected ? "true" : "false",
         fc.bytes_in, fc.bytes_out, fc.frames_in, fc.queue_drops, uart.rx_overflow);
     return send_json(request, json);
 }
@@ -116,6 +120,7 @@ static esp_err_t config_get_handler(httpd_req_t *request)
     cJSON_AddNumberToObject(root, "udp_port", c->udp_port);
     cJSON_AddNumberToObject(root, "tcp_port", c->tcp_port);
     cJSON_AddNumberToObject(root, "usb_mode", c->usb_mode);
+    cJSON_AddNumberToObject(root, "bridge_role", c->bridge_role);
     cJSON_AddNumberToObject(root, "can_bitrate", c->can_bitrate);
     cJSON_AddNumberToObject(root, "led_brightness", c->led_brightness);
     char *json = cJSON_PrintUnformatted(root);
@@ -185,6 +190,9 @@ static esp_err_t config_put_handler(httpd_req_t *request)
     value = c.tcp_port; valid &= json_u32(root, "tcp_port", &value) && value <= UINT16_MAX;
     c.tcp_port = (uint16_t)value;
     value = c.usb_mode; valid &= json_u32(root, "usb_mode", &value); c.usb_mode = (airlink_usb_mode_t)value;
+    value = c.bridge_role; valid &= json_u32(root, "bridge_role", &value);
+    c.bridge_role = (airlink_bridge_role_t)value;
+    c.bridge_enabled = c.bridge_role != AIRLINK_BRIDGE_OFF;
     valid &= json_u32(root, "can_bitrate", &c.can_bitrate);
     value = c.led_brightness; valid &= json_u32(root, "led_brightness", &value) && value <= 100;
     c.led_brightness = (uint8_t)value;

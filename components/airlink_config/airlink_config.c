@@ -30,6 +30,9 @@ typedef struct {
     uint32_t crc32;
 } factory_identity_t;
 
+_Static_assert(sizeof(airlink_bridge_role_t) == sizeof(uint32_t),
+               "bridge role must preserve the schema-v1 reserved field layout");
+
 #define CONFIG_MAGIC UINT32_C(0x414c4346)
 #define IDENTITY_MAGIC UINT32_C(0x414c4944)
 static const char *TAG = "config";
@@ -81,6 +84,8 @@ bool airlink_config_validate(const airlink_config_t *config)
     if (config->route_mode > AIRLINK_ROUTE_TRANSPARENT || !baud_valid(config->uart_baud)) return false;
     if (config->wifi_mode > AIRLINK_WIFI_APSTA || config->wifi_band > AIRLINK_WIFI_BAND_5G) return false;
     if (config->usb_mode > AIRLINK_USB_MAVLINK || !can_bitrate_valid(config->can_bitrate)) return false;
+    if (config->bridge_role > AIRLINK_BRIDGE_GROUND ||
+        config->bridge_enabled != (config->bridge_role != AIRLINK_BRIDGE_OFF)) return false;
     if (config->udp_port == 0 || config->tcp_port == 0 || config->led_brightness > 100) return false;
     const size_t ap_ssid_len = strnlen(config->ap_ssid, sizeof(config->ap_ssid));
     const size_t sta_ssid_len = strnlen(config->sta_ssid, sizeof(config->sta_ssid));
@@ -95,6 +100,9 @@ bool airlink_config_validate(const airlink_config_t *config)
         admin_password_len < 12 || admin_password_len >= sizeof(config->admin_password)) return false;
     if ((config->wifi_mode == AIRLINK_WIFI_STA || config->wifi_mode == AIRLINK_WIFI_APSTA) &&
         sta_ssid_len == 0) return false;
+    if (config->bridge_role == AIRLINK_BRIDGE_AIR && config->wifi_mode != AIRLINK_WIFI_AP) return false;
+    if (config->bridge_role == AIRLINK_BRIDGE_GROUND &&
+        (config->wifi_mode != AIRLINK_WIFI_STA || config->usb_mode != AIRLINK_USB_MAVLINK)) return false;
     return true;
 }
 
@@ -158,6 +166,8 @@ static void load_defaults(airlink_config_t *config)
         .usb_mode = AIRLINK_USB_LOG_CLI,
         .can_bitrate = 1000000,
         .led_brightness = 25,
+        .bridge_enabled = false,
+        .bridge_role = AIRLINK_BRIDGE_OFF,
     };
     snprintf(config->ap_ssid, sizeof(config->ap_ssid), "FlyingRC-AirLink-%02X%02X", mac[4], mac[5]);
     random_password(config->ap_password);

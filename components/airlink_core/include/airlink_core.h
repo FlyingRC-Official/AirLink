@@ -15,6 +15,7 @@
 #define AIRLINK_MAX_TCP_CLIENTS 2U
 #define AIRLINK_ENDPOINT_ID_FC_UART 1U
 #define AIRLINK_ENDPOINT_ID_USB 2U
+#define AIRLINK_ENDPOINT_ID_BRIDGE 3U
 #define AIRLINK_ENDPOINT_ID_UDP_BASE 16U
 #define AIRLINK_ENDPOINT_ID_TCP_BASE 32U
 
@@ -41,10 +42,17 @@ typedef enum {
 } airlink_usb_mode_t;
 
 typedef enum {
+    AIRLINK_BRIDGE_OFF = 0,
+    AIRLINK_BRIDGE_AIR = 1,
+    AIRLINK_BRIDGE_GROUND = 2,
+} airlink_bridge_role_t;
+
+typedef enum {
     AIRLINK_ENDPOINT_UART = 0,
     AIRLINK_ENDPOINT_UDP = 1,
     AIRLINK_ENDPOINT_TCP = 2,
     AIRLINK_ENDPOINT_USB = 3,
+    AIRLINK_ENDPOINT_BRIDGE = 4,
 } airlink_endpoint_type_t;
 
 typedef struct {

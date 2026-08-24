@@ -42,14 +42,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item www/AirLink-Flasher-v0.2.1-dev.html AirLink-Flasher-v0.2.1-dev.html
+          Copy-Item www/AirLink-Flasher-v0.3.0-dev.html AirLink-Flasher-v0.3.0-dev.html
           $env:AIRLINK_FLASHER_DRY_RUN = "1"
           cmd /c start_flasher.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate macOS launcher
         if: runner.os == 'macOS'
         run: |
-          cp www/AirLink-Flasher-v0.2.1-dev.html AirLink-Flasher-v0.2.1-dev.html
+          cp www/AirLink-Flasher-v0.3.0-dev.html AirLink-Flasher-v0.3.0-dev.html
           AIRLINK_FLASHER_DRY_RUN=1 ./start_flasher.command
   esp-idf:
     runs-on: ubuntu-latest

@@ -1,5 +1,6 @@
 build*/
 node_modules/
+.pnpm-store/
 managed_components/
 sdkconfig
 sdkconfig.old
@@ -8,8 +9,13 @@ factory-results/
 internal/
 *.pyc
 __pycache__/
+.tools/
+device-backups/
+_source_import/
+AirLink-main.zip
 .DS_Store
 tools/usb_flasher/AirLink-*-Flasher-*/
 tools/usb_flasher/*.zip
 tools/usb_flasher/AirLink-Flasher-*.html
 tools/usb_flasher/www/
+tools/configurator/.airlink-configurator-port

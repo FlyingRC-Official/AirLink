@@ -27,8 +27,10 @@ typedef struct {
     uint8_t led_brightness;
     char serial_number[AIRLINK_SERIAL_MAX + 1];
     char admin_password[AIRLINK_PASSWORD_MAX + 1];
-    bool mesh_reserved_enabled;
-    uint32_t mesh_reserved_network_id;
+    /* These replace the same-sized reserved mesh fields from schema v1, so
+     * existing CRC-protected records remain binary-compatible. */
+    bool bridge_enabled;
+    airlink_bridge_role_t bridge_role;
 } airlink_config_t;
 
 typedef struct {

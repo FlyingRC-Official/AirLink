@@ -196,7 +196,7 @@ identity.set(new TextEncoder().encode("AirLink-Test_2026!\0"), 29);
 identityView.setUint32(96, crc32(identity.subarray(0, 96)), true);
 assert.ok(factoryIdentityPresent(initializedIdentityPartition), "valid factory identity is detected");
 
-const portable = await readFile(join(root, "www/AirLink-Flasher-v0.2.1-dev.html"), "utf8");
+const portable = await readFile(join(root, "www/AirLink-Flasher-v0.3.0-dev.html"), "utf8");
 assert.match(portable, /<script type="module">/);
 assert.match(portable, /<style>/);
 assert.doesNotMatch(portable, /<script[^>]+src=/);

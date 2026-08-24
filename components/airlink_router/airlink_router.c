@@ -97,15 +97,20 @@ static bool duplicate_network_frame(const uint8_t *data, size_t length)
     return false;
 }
 
+static bool vehicle_side(airlink_endpoint_type_t type)
+{
+    return type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE;
+}
+
 static void route(const endpoint_slot_t *source, const uint8_t *data, size_t length,
                   bool high_priority)
 {
     for (size_t i = 0; i < MAX_ENDPOINTS; ++i) {
         endpoint_slot_t *destination = &s_endpoints[i];
         if (!destination->used || destination == source) continue;
-        const bool from_uart = source->endpoint.type == AIRLINK_ENDPOINT_UART;
-        const bool to_uart = destination->endpoint.type == AIRLINK_ENDPOINT_UART;
-        if ((!from_uart && !to_uart) || (from_uart && to_uart)) continue;
+        const bool from_vehicle = vehicle_side(source->endpoint.type);
+        const bool to_vehicle = vehicle_side(destination->endpoint.type);
+        if (from_vehicle == to_vehicle) continue;
         const esp_err_t err = destination->endpoint.send(data, length, high_priority,
                                                           destination->endpoint.context);
         if (err == ESP_OK) {
@@ -141,7 +146,7 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
             source->stats.parse_errors++;
             continue;
         }
-        if (source->endpoint.type == AIRLINK_ENDPOINT_UART) {
+        if (vehicle_side(source->endpoint.type)) {
             s_fc_last_seen_us = esp_timer_get_time();
             if (airlink_mavlink_heartbeat_is_autopilot(&frame)) {
                 if (!s_fc_identity_known) {
