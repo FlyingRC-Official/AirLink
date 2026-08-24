@@ -51,17 +51,17 @@ async function fixture() {
     manifest,
     manifestBytes,
     metadata: {
-      tag_name: RELEASE.version,
+      tag_name: RELEASE.tag,
       draft: false,
       prerelease: true,
-      html_url: `https://github.com/${RELEASE.owner}/${RELEASE.repository}/releases/tag/${RELEASE.version}`,
+      html_url: `https://github.com/${RELEASE.owner}/${RELEASE.repository}/releases/tag/${RELEASE.tag}`,
       assets,
     },
   };
 }
 
 async function packagedFixture() {
-  const firmwareRoot = join(root, "public/firmware", RELEASE.version);
+  const firmwareRoot = join(root, "public/firmware", RELEASE.tag);
   const files = new Map(await Promise.all(RELEASE.files.map(async ({ name }) => [
     name,
     new Uint8Array(await readFile(join(firmwareRoot, name))),
@@ -77,10 +77,10 @@ async function packagedFixture() {
     files,
     manifestBytes,
     metadata: {
-      tag_name: RELEASE.version,
+      tag_name: RELEASE.tag,
       draft: false,
       prerelease: true,
-      html_url: `https://github.com/${RELEASE.owner}/${RELEASE.repository}/releases/tag/${RELEASE.version}`,
+      html_url: `https://github.com/${RELEASE.owner}/${RELEASE.repository}/releases/tag/${RELEASE.tag}`,
       assets,
     },
   };
@@ -196,7 +196,7 @@ identity.set(new TextEncoder().encode("AirLink-Test_2026!\0"), 29);
 identityView.setUint32(96, crc32(identity.subarray(0, 96)), true);
 assert.ok(factoryIdentityPresent(initializedIdentityPartition), "valid factory identity is detected");
 
-const portable = await readFile(join(root, "www/AirLink-Flasher-v0.3.0-dev.html"), "utf8");
+const portable = await readFile(join(root, "www/AirLink-Flasher-v0.3.1-dev.html"), "utf8");
 assert.match(portable, /<script type="module">/);
 assert.match(portable, /<style>/);
 assert.doesNotMatch(portable, /<script[^>]+src=/);

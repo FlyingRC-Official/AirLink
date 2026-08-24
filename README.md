@@ -58,11 +58,14 @@ per-board administrator password.
 
 | Method | Route | Function |
 | --- | --- | --- |
+| `GET` | `/api/v1/capabilities` | API/schema version, hardware identity, firmware and feature flags |
 | `GET` | `/api/v1/status` | Firmware, flight-controller, Wi-Fi, UART, heap and reset status |
 | `GET` | `/api/v1/config` | Read the active configuration |
+| `POST` | `/api/v1/config/validate` | Validate and normalize a full configuration without saving it |
 | `PUT` | `/api/v1/config` | Validate and save configuration; reboot required |
 | `GET` | `/api/v1/clients` | List active UDP and TCP clients |
 | `GET` | `/api/v1/can` | Read TWAI counters and active DroneCAN nodes |
+| `POST` | `/api/v1/wifi/scan` | Return up to 32 de-duplicated nearby networks; blocked while armed or updating |
 | `POST` | `/api/v1/actions/reboot` | Reboot the device |
 | `POST` | `/api/v1/actions/factory-reset` | Restore generated per-board defaults and reboot |
 | `POST` | `/api/v1/ota` | Validate, write and activate an OTA application image |
@@ -109,11 +112,11 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ### Local USB flasher
 
-The `v0.3.0-dev` release includes a single-file local Web Serial flasher for
-Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.0-dev.zip`, then run
+The `v0.3.1-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.1-dev.zip`, then run
 `start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
 Edge is required; Safari is not supported. The page downloads only the fixed
-`v0.3.0-dev` firmware from the matching GitHub tag and accepts it only when the
+`v0.3.1-dev` firmware from the matching GitHub tag and accepts it only when the
 manifest SHA-256 and GitHub Release digest both match.
 
 The flasher never performs a whole-chip erase and never writes normal NVS or
@@ -137,6 +140,13 @@ macOS. No local server or Node.js installation is required. Chrome or Edge is
 required. Credentials and device data stay in local memory and are not stored
 in browser storage.
 
+For discovery, batch deployment and proxy access to older firmware, run the
+optional native helper package. It embeds the same HTML, binds only to
+`127.0.0.1`, generates a new random session token at every start and exposes
+`/helper/v1/health`, `/helper/v1/devices` and an AirLink-API-only private-network
+proxy. AirLink devices also answer the rate-limited UDP probe
+`AIRLINK_DISCOVER_V1\n` with credential-free identity and address metadata.
+
 ## Operation
 
 1. Connect to the AP using the per-board password recorded by factory test or
@@ -158,18 +168,24 @@ UART and Wi-Fi link counters, `config show` to read the active settings and
 `config help` to list every writable key. For example:
 
 ```text
-config set uart_baud 115200
-config set route_mode mavlink
-config set wifi_mode ap
-config set wifi_band 2g
-config set udp_port 14550
-config set tcp_port 5760
-config set bridge_role off
+config begin
+config stage uart_baud 115200
+config stage route_mode mavlink
+config stage wifi_mode ap
+config stage wifi_band 2g
+config stage udp_port 14550
+config stage tcp_port 5760
+config stage bridge_role off
+config validate
+config commit
 reboot
 ```
 
-`config set` and `config reset` save to the CRC-protected NVS A/B records. The
-new settings take effect after `reboot`. Configuration writes and reboot remain
+The transaction is held only in RAM until `config commit`; validation failure,
+timeout, disconnect or `config abort` leaves the active configuration unchanged.
+Legacy `config set` and `config reset` remain available and save to the
+CRC-protected NVS A/B records. New settings take effect after `reboot`.
+Configuration writes and reboot remain
 blocked while an armed flight-controller heartbeat is latched. `config show`
 includes credentials because USB is treated as a local physical management
 interface; protect physical access to deployed devices.

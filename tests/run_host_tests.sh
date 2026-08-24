@@ -12,6 +12,12 @@ cc -std=c11 -Wall -Wextra -Werror \
   "$root/components/airlink_router/airlink_mavlink.c" -o "$out"
 "$out"
 
+cc -std=c11 -Wall -Wextra -Werror \
+  -I"$root/components/airlink_core/include" \
+  "$root/tests/test_stream.c" \
+  "$root/components/airlink_core/airlink_stream.c" -o "$out-stream"
+"$out-stream"
+
 # A blank device has no "airlink" namespace. The initial open must be
 # read-write so first boot can create it before storing the default A/B record.
 if grep -F 'nvs_open(NVS_NAMESPACE, NVS_READONLY' \
@@ -62,6 +68,18 @@ required = [
     'airlink_router_fc_armed()',
     'OK saved; reboot required',
     'fc_bytes_in=',
+    'config begin',
+    'config stage ',
+    'config validate',
+    'config commit',
+    'config abort',
+    'airlink_escape_feed(',
+    'bridge_tx_queue_drops=',
+    'wifi_reconnects_total=',
+    'firmware=%s',
+    'free_heap=',
+    'can_rx_frames=',
+    'ota_in_progress=',
 ]
 for marker in required:
     assert marker in source, f"missing USB configuration guard: {marker}"
@@ -86,6 +104,7 @@ assert '#define NET_PACKET_QUEUE 64' in wifi
 assert '#define NETWORK_TASK_PRIORITY 19' in wifi
 assert '#define TCP_TX_BURST 8U' in wifi
 assert 'service_tcp_tx(client)' in wifi
+assert 'airlink_stream_chunk_size(length - offset' in router
 assert '+++AIRLINK-CLI\\r\\n' in usb
 assert '#define USB_QUEUE_DEPTH 64' in usb
 assert '#define USB_TASK_PRIORITY 19' in usb

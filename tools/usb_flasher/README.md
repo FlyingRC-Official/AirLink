@@ -1,7 +1,7 @@
 # AirLink Cross-Platform Local USB Flasher
 
 Local Web Serial flasher for AirLink C5 Mesh V1 on Windows and macOS. It is
-fixed to the `v0.3.0-dev` ESP32-C5 N8R8 release. The page verifies the GitHub
+fixed to the `v0.3.1-dev` ESP32-C5 N8R8 release. The page verifies the GitHub
 Release metadata, downloads the same bytes from the corresponding Git tag, and
 requires every image to match both the release digest and firmware manifest.
 
@@ -19,7 +19,7 @@ requires every image to match both the release digest and firmware manifest.
 
 1. Extract the complete ZIP.
 2. Double-click `start_flasher.command`. If macOS blocks the launcher, right-click
-   `AirLink-Flasher-v0.3.0-dev.html`, choose **Open With**, then select Google
+   `AirLink-Flasher-v0.3.1-dev.html`, choose **Open With**, then select Google
    Chrome or Microsoft Edge.
 3. Disconnect every non-USB 5 V source. Hold BOOT, press RESET, release BOOT.
 4. Save the generated or entered initial credentials before flashing.
@@ -36,8 +36,8 @@ npm run build
 ```
 
 The distributable single-file page is generated at
-`www/AirLink-Flasher-v0.3.0-dev.html`. Run `npm run dev` for local development.
-The source firmware copies under `public/firmware/v0.3.0-dev` exist only so the
+`www/AirLink-Flasher-v0.3.1-dev.html`. Run `npm run dev` for local development.
+The source firmware copies under `public/firmware/v0.3.1-dev` exist only so the
 release tag can provide CORS-readable bytes; they are not embedded in the HTML.
 
 ## Safety design
@@ -45,7 +45,7 @@ release tag can provide CORS-readable bytes; they are not embedded in the HTML.
 - Windows/macOS Chrome/Edge Web Serial and secure-context checks.
 - Espressif USB VID filter and explicit ESP32-C5 chip-name gate.
 - Live 8 MB flash-capacity check and MAC-derived Wi-Fi name preview.
-- Fixed `v0.3.0-dev` GitHub Release metadata and prerelease checks.
+- Fixed `v0.3.1-dev` GitHub Release metadata and prerelease checks.
 - Manifest plus GitHub Release digest SHA-256 validation before use.
 - Fixed offsets `0x2000`, `0x8000`, `0x19000`, and `0x30000`.
 - `eraseAll` is always false; neither NVS `0x9000` nor identity `0x1C000` is

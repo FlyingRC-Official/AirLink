@@ -1,6 +1,7 @@
 export const RELEASE = Object.freeze({
-  version: "v0.3.0-dev",
-  label: "AirLink V0.3.0 DEV",
+  tag: "v0.3.1-dev",
+  version: "0.3.1-dev",
+  label: "AirLink V0.3.1-DEV",
   owner: "FlyingRC-Official",
   repository: "AirLink",
   hardwareId: "airlink-c5-mesh-v1",
@@ -16,16 +17,16 @@ export const RELEASE = Object.freeze({
 });
 
 export function releaseApiUrl(release = RELEASE) {
-  return `https://api.github.com/repos/${release.owner}/${release.repository}/releases/tags/${release.version}`;
+  return `https://api.github.com/repos/${release.owner}/${release.repository}/releases/tags/${release.tag}`;
 }
 
 export function releasePageUrl(release = RELEASE) {
-  return `https://github.com/${release.owner}/${release.repository}/releases/tag/${release.version}`;
+  return `https://github.com/${release.owner}/${release.repository}/releases/tag/${release.tag}`;
 }
 
 export function rawFirmwareUrl(name, release = RELEASE) {
-  return `https://raw.githubusercontent.com/${release.owner}/${release.repository}/${release.version}` +
-    `/tools/usb_flasher/public/firmware/${release.version}/${name}`;
+  return `https://raw.githubusercontent.com/${release.owner}/${release.repository}/${release.tag}` +
+    `/tools/usb_flasher/public/firmware/${release.tag}/${name}`;
 }
 
 export async function sha256(data) {
@@ -110,7 +111,7 @@ export async function loadReleaseFirmware({
   }
 
   const metadata = await metadataResponse.json();
-  if (metadata.tag_name !== release.version) throw new Error(`GitHub Release 标签不是 ${release.version}`);
+  if (metadata.tag_name !== release.tag) throw new Error(`GitHub Release 标签不是 ${release.tag}`);
   if (metadata.draft) throw new Error("GitHub Release 仍是草稿");
   if (!metadata.prerelease) throw new Error("目标 GitHub Release 未标记为预发布");
   if (!Array.isArray(metadata.assets)) throw new Error("GitHub Release 附件列表无效");

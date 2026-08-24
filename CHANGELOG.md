@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.1-dev - 2026-08-24
+
+- Added the Windows/macOS single-file configurator and loopback-only native Go
+  helper for discovery, safe proxying, profiles, batch deployment and pairing.
+- Added atomic USB configuration transactions, capability/config validation,
+  Wi-Fi scan and UDP discovery interfaces.
+- Added change review, reboot/reconnect verification, bilingual help,
+  redacted diagnostics, passive link tests and local/GitHub OTA workflows.
+- Fixed transparent byte streams being dropped above 280 bytes by chunking
+  UART, TCP and bridge reads while preserving byte order.
+- Fixed factory credentials being overwritten on every boot after a user
+  changed AP or administrator passwords.
+- Replaced the USB CLI escape check with a timeout-aware streaming matcher that
+  handles every split point, merged reads and overlapping plus prefixes.
+- Added stable ground/air queue-drop fields and monotonic Wi-Fi reconnect totals.
+- This development prerelease is bench-oriented. Flight tests, a 24-hour soak
+  and validation on physical Mac hardware remain outside its release gate.
+
 ## 0.3.0-dev - 2026-08-24
 
 - Added a universal two-unit wireless bridge: the same image can be configured
