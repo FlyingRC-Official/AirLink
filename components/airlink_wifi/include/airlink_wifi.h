@@ -13,7 +13,10 @@ typedef struct {
     uint8_t channel;
     uint8_t udp_clients;
     uint8_t tcp_clients;
+    /* reconnects is retained as a compatibility alias of reconnects_total. */
     uint32_t reconnects;
+    uint32_t reconnects_total;
+    uint32_t reconnect_streak;
     bool bridge_connected;
     uint32_t bridge_reconnects;
 } airlink_wifi_status_t;
@@ -21,3 +24,4 @@ typedef struct {
 esp_err_t airlink_wifi_start(const airlink_config_t *config);
 void airlink_wifi_get_status(airlink_wifi_status_t *status);
 size_t airlink_wifi_clients_json(char *output, size_t capacity);
+esp_err_t airlink_wifi_scan_json(char *output, size_t capacity);

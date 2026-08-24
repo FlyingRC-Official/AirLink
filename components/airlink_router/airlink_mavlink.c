@@ -3,6 +3,11 @@
 
 #include <string.h>
 
+static inline void increment_error(airlink_mavlink_parser_t *parser)
+{
+    if (parser->errors != UINT32_MAX) parser->errors++;
+}
+
 typedef struct { uint32_t id; uint8_t crc_extra; } crc_entry_t;
 
 /* MAVLink common.xml CRC extras for messages needed by AirLink routing and
@@ -82,7 +87,7 @@ static bool finish_frame(airlink_mavlink_parser_t *parser, airlink_mavlink_frame
         const uint16_t received = (uint16_t)parser->buffer[crc_offset] |
                                   ((uint16_t)parser->buffer[crc_offset + 1U] << 8U);
         crc_valid = crc == received;
-        if (!crc_valid) parser->errors++;
+        if (!crc_valid) increment_error(parser);
     }
     const size_t payload_offset = header_length;
     const bool heartbeat_valid = message_id == 0 && known && crc_valid && payload_length >= 9;
@@ -125,7 +130,7 @@ bool airlink_mavlink_parse_byte(airlink_mavlink_parser_t *parser, uint8_t byte,
         return false;
     }
     if (parser->length >= sizeof(parser->buffer)) {
-        parser->errors++;
+        increment_error(parser);
         parser->length = parser->expected = 0;
         return false;
     }

@@ -15,7 +15,7 @@ esp_err_t airlink_diag_init(void)
     esp_err_t err = nvs_open("air_diag", NVS_READWRITE, &nvs);
     if (err != ESP_OK) return err;
     if (nvs_get_u32(nvs, "boot_count", &s_boot_count) == ESP_ERR_NVS_NOT_FOUND) s_boot_count = 0;
-    s_boot_count++;
+    if (s_boot_count != UINT32_MAX) s_boot_count++;
     err = nvs_set_u32(nvs, "boot_count", s_boot_count);
     if (err == ESP_OK) err = nvs_set_u32(nvs, "last_reset", (uint32_t)esp_reset_reason());
     if (err == ESP_OK) err = nvs_commit(nvs);

@@ -33,6 +33,11 @@ static QueueHandle_t s_normal_queue;
 static airlink_uart_health_t s_health;
 static TaskHandle_t s_rx_task;
 
+static inline void increment_saturated_u32(uint32_t *value)
+{
+    if (*value != UINT32_MAX) (*value)++;
+}
+
 static esp_err_t uart_router_send(const uint8_t *data, size_t length,
                                   bool high_priority, void *context)
 {
@@ -46,12 +51,12 @@ static esp_err_t uart_router_send(const uint8_t *data, size_t length,
         uart_packet_t discarded;
         if (xQueueReceive(s_normal_queue, &discarded, 0) == pdTRUE &&
             xQueueSend(s_normal_queue, &packet, 0) == pdTRUE) {
-            s_health.normal_queue_drops++;
+            increment_saturated_u32(&s_health.normal_queue_drops);
             return ESP_OK;
         }
-        s_health.normal_queue_drops++;
+        increment_saturated_u32(&s_health.normal_queue_drops);
     } else {
-        s_health.high_queue_drops++;
+        increment_saturated_u32(&s_health.high_queue_drops);
     }
     return ESP_ERR_NO_MEM;
 }
@@ -100,7 +105,7 @@ static void uart_rx_task(void *argument)
                 remaining -= (size_t)received;
             }
         } else if (event.type == UART_FIFO_OVF || event.type == UART_BUFFER_FULL) {
-            s_health.rx_overflow++;
+            increment_saturated_u32(&s_health.rx_overflow);
             uart_flush_input(FC_UART);
             xQueueReset(s_events);
             ESP_LOGW(TAG, "RX overflow recovered");

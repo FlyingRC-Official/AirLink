@@ -8,26 +8,42 @@
 #include <stdlib.h>
 #include <string.h>
 #include "airlink_config.h"
+#include "airlink_can.h"
+#include "airlink_core.h"
+#include "airlink_diag.h"
+#include "airlink_ota.h"
 #include "airlink_router.h"
+#include "airlink_stream.h"
 #include "airlink_uart.h"
 #include "airlink_wifi.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_check.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "soc/soc.h"
+#include "soc/usb_serial_jtag_reg.h"
 
 #define USB_QUEUE_DEPTH 64
 #define USB_TASK_PRIORITY 19
 #define USB_CLI_ESCAPE "+++AIRLINK-CLI\r\n"
+#define USB_RX_CHUNK 256U
 typedef struct { uint16_t length; uint8_t data[AIRLINK_MAX_FRAME_SIZE]; } usb_packet_t;
 
 static airlink_usb_mode_t s_mode;
 static QueueHandle_t s_tx_queue;
 static airlink_usb_cli_handler_t s_cli_handler;
 static vprintf_like_t s_console_vprintf;
+static bool s_config_transaction_active;
+static airlink_config_t s_staged_config;
+static int64_t s_config_transaction_deadline_us;
+
+#define CONFIG_TRANSACTION_TIMEOUT_US INT64_C(30000000)
+#define USB_ESCAPE_TIMEOUT_US INT64_C(250000)
 
 static const char *route_mode_name(airlink_route_mode_t mode)
 {
@@ -64,6 +80,8 @@ static void status_show(void)
 {
     airlink_wifi_status_t wifi = {0};
     airlink_uart_health_t uart = {0};
+    airlink_can_status_t can = {0};
+    airlink_diag_status_t diag = {0};
     airlink_endpoint_stats_t fc = {0};
     airlink_endpoint_stats_t usb = {0};
     airlink_endpoint_stats_t bridge_tcp = {0};
@@ -71,17 +89,35 @@ static void status_show(void)
     airlink_config_get(&config);
     airlink_wifi_get_status(&wifi);
     airlink_uart_get_health(&uart);
+    airlink_can_get_status(&can);
+    airlink_diag_get(&diag);
     const uint8_t vehicle_endpoint = config.bridge_role == AIRLINK_BRIDGE_GROUND ?
                                      AIRLINK_ENDPOINT_ID_BRIDGE : AIRLINK_ENDPOINT_ID_FC_UART;
     airlink_router_get_stats(vehicle_endpoint, &fc);
     airlink_router_get_stats(AIRLINK_ENDPOINT_ID_USB, &usb);
     if (config.bridge_role == AIRLINK_BRIDGE_AIR) {
-        airlink_router_get_stats(AIRLINK_ENDPOINT_ID_TCP_BASE, &bridge_tcp);
+        for (uint8_t i = 0; i < AIRLINK_MAX_TCP_CLIENTS; ++i) {
+            airlink_endpoint_stats_t client = {0};
+            airlink_router_get_stats((uint8_t)(AIRLINK_ENDPOINT_ID_TCP_BASE + i), &client);
+            bridge_tcp.queue_drops = UINT32_MAX - bridge_tcp.queue_drops < client.queue_drops ?
+                                     UINT32_MAX : bridge_tcp.queue_drops + client.queue_drops;
+        }
+    } else if (config.bridge_role == AIRLINK_BRIDGE_GROUND) {
+        bridge_tcp.queue_drops = fc.queue_drops;
     }
 
-    char output[768];
+    const esp_app_desc_t *app = esp_app_get_description();
+    char output[2048];
     snprintf(output, sizeof(output),
              "OK status\r\n"
+             "firmware=%s\r\n"
+             "hardware_id=%s\r\n"
+             "serial_number=%s\r\n"
+             "uptime_seconds=%" PRIu32 "\r\n"
+             "free_heap=%" PRIu32 "\r\n"
+             "minimum_free_heap=%" PRIu32 "\r\n"
+             "boot_count=%" PRIu32 "\r\n"
+             "reset_reason=%" PRIu32 "\r\n"
              "fc_seen=%u\r\n"
              "fc_armed=%u\r\n"
              "fc_bytes_in=%" PRIu64 "\r\n"
@@ -96,26 +132,48 @@ static void status_show(void)
              "udp_clients=%u\r\n"
              "tcp_clients=%u\r\n"
              "wifi_reconnects=%" PRIu32 "\r\n"
+             "wifi_reconnects_total=%" PRIu32 "\r\n"
+             "wifi_reconnect_streak=%" PRIu32 "\r\n"
              "bridge_role=%s\r\n"
              "bridge_connected=%u\r\n"
              "bridge_reconnects=%" PRIu32 "\r\n"
              "usb_frames_out=%" PRIu32 "\r\n"
              "usb_queue_drops=%" PRIu32 "\r\n"
              "bridge_tcp_queue_drops=%" PRIu32 "\r\n"
+             "vehicle_queue_drops=%" PRIu32 "\r\n"
+             "bridge_tx_queue_drops=%" PRIu32 "\r\n"
              "uart_rx_overflow=%" PRIu32 "\r\n"
              "uart_driver_restarts=%" PRIu32 "\r\n"
              "uart_high_queue_drops=%" PRIu32 "\r\n"
-             "uart_normal_queue_drops=%" PRIu32 "\r\n",
+             "uart_normal_queue_drops=%" PRIu32 "\r\n"
+             "can_rx_frames=%" PRIu32 "\r\n"
+             "can_tx_frames=%" PRIu32 "\r\n"
+             "can_bus_errors=%" PRIu32 "\r\n"
+             "can_dronecan_errors=%" PRIu32 "\r\n"
+             "can_arbitration_lost=%" PRIu32 "\r\n"
+             "can_bus_off=%" PRIu32 "\r\n"
+             "can_dronecan_nodes=%u\r\n"
+             "udp_listener_port=%u\r\n"
+             "tcp_listener_port=%u\r\n"
+             "ota_in_progress=%u\r\n",
+             app->version, AIRLINK_HARDWARE_ID, config.serial_number,
+             diag.uptime_seconds, diag.free_heap, diag.minimum_free_heap,
+             diag.boot_count, diag.reset_reason,
              airlink_router_fc_seen(), airlink_router_fc_armed(),
              fc.bytes_in, fc.bytes_out, fc.frames_in, fc.frames_out,
              fc.parse_errors, wifi.ap_started, wifi.sta_connected,
              (int)wifi.rssi, wifi.channel, wifi.udp_clients,
-             wifi.tcp_clients, wifi.reconnects, bridge_role_name(config.bridge_role),
+             wifi.tcp_clients, wifi.reconnects, wifi.reconnects_total,
+             wifi.reconnect_streak, bridge_role_name(config.bridge_role),
              wifi.bridge_connected, wifi.bridge_reconnects,
              usb.frames_out, usb.queue_drops, bridge_tcp.queue_drops,
+             fc.queue_drops, bridge_tcp.queue_drops,
              uart.rx_overflow,
              uart.driver_restarts, uart.high_queue_drops,
-             uart.normal_queue_drops);
+             uart.normal_queue_drops, can.rx_frames, can.tx_frames,
+             can.bus_errors, can.dronecan_errors, can.arbitration_lost,
+             can.bus_off_count, can.dronecan_nodes, config.udp_port,
+             config.tcp_port, airlink_ota_in_progress());
     airlink_usb_write_cli(output);
 }
 
@@ -194,101 +252,107 @@ static void config_help(void)
         "config set can_bitrate 125000|250000|500000|1000000\r\n"
         "config set led_brightness 0..100\r\n"
         "config set admin_password VALUE\r\n"
+        "config begin\r\n"
+        "config stage KEY VALUE\r\n"
+        "config validate\r\n"
+        "config commit\r\n"
+        "config abort\r\n"
         "config reset\r\n"
-        "Changes are saved immediately and take effect after reboot.\r\n");
+        "Legacy set saves immediately; transaction commit saves once. Reboot required.\r\n");
 }
 
-static void config_set(const char *arguments)
+static bool config_apply_value(airlink_config_t *config, const char *arguments,
+                               bool *recognized)
 {
     const char *separator = arguments == NULL ? NULL : strchr(arguments, ' ');
-    if (separator == NULL) {
-        airlink_usb_write_cli("ERR usage: config set KEY VALUE\r\n");
-        return;
-    }
+    *recognized = true;
+    if (separator == NULL) return false;
     const size_t key_length = (size_t)(separator - arguments);
     const char *value = separator + 1;
     while (*value == ' ') value++;
-    if (key_length == 0 || *value == '\0') {
-        airlink_usb_write_cli("ERR usage: config set KEY VALUE\r\n");
-        return;
-    }
-    if (airlink_router_fc_armed()) {
-        airlink_usb_write_cli("ERR flight controller armed\r\n");
-        return;
-    }
-
-    airlink_config_t config;
-    airlink_config_get(&config);
-    bool recognized = true;
+    if (key_length == 0 || *value == '\0') return false;
     bool value_ok = true;
     uint32_t number = 0;
 #define KEY_IS(name) (key_length == sizeof(name) - 1U && strncmp(arguments, name, key_length) == 0)
     if (KEY_IS("route_mode")) {
-        if (strcmp(value, "mavlink") == 0) config.route_mode = AIRLINK_ROUTE_MAVLINK;
-        else if (strcmp(value, "transparent") == 0) config.route_mode = AIRLINK_ROUTE_TRANSPARENT;
+        if (strcmp(value, "mavlink") == 0) config->route_mode = AIRLINK_ROUTE_MAVLINK;
+        else if (strcmp(value, "transparent") == 0) config->route_mode = AIRLINK_ROUTE_TRANSPARENT;
         else value_ok = false;
     } else if (KEY_IS("uart_baud")) {
         value_ok = parse_u32(value, &number);
-        if (value_ok) config.uart_baud = number;
+        if (value_ok) config->uart_baud = number;
     } else if (KEY_IS("wifi_mode")) {
-        if (strcmp(value, "ap") == 0) config.wifi_mode = AIRLINK_WIFI_AP;
-        else if (strcmp(value, "sta") == 0) config.wifi_mode = AIRLINK_WIFI_STA;
-        else if (strcmp(value, "apsta") == 0) config.wifi_mode = AIRLINK_WIFI_APSTA;
+        if (strcmp(value, "ap") == 0) config->wifi_mode = AIRLINK_WIFI_AP;
+        else if (strcmp(value, "sta") == 0) config->wifi_mode = AIRLINK_WIFI_STA;
+        else if (strcmp(value, "apsta") == 0) config->wifi_mode = AIRLINK_WIFI_APSTA;
         else value_ok = false;
     } else if (KEY_IS("wifi_band")) {
-        if (strcmp(value, "auto") == 0) config.wifi_band = AIRLINK_WIFI_BAND_AUTO;
-        else if (strcmp(value, "2g") == 0) config.wifi_band = AIRLINK_WIFI_BAND_2G;
-        else if (strcmp(value, "5g") == 0) config.wifi_band = AIRLINK_WIFI_BAND_5G;
+        if (strcmp(value, "auto") == 0) config->wifi_band = AIRLINK_WIFI_BAND_AUTO;
+        else if (strcmp(value, "2g") == 0) config->wifi_band = AIRLINK_WIFI_BAND_2G;
+        else if (strcmp(value, "5g") == 0) config->wifi_band = AIRLINK_WIFI_BAND_5G;
         else value_ok = false;
     } else if (KEY_IS("ap_ssid")) {
-        value_ok = copy_config_text(config.ap_ssid, sizeof(config.ap_ssid), value, false);
+        value_ok = copy_config_text(config->ap_ssid, sizeof(config->ap_ssid), value, false);
     } else if (KEY_IS("ap_password")) {
-        value_ok = copy_config_text(config.ap_password, sizeof(config.ap_password), value, false);
+        value_ok = copy_config_text(config->ap_password, sizeof(config->ap_password), value, false);
     } else if (KEY_IS("sta_ssid")) {
-        value_ok = copy_config_text(config.sta_ssid, sizeof(config.sta_ssid), value, true);
+        value_ok = copy_config_text(config->sta_ssid, sizeof(config->sta_ssid), value, true);
     } else if (KEY_IS("sta_password")) {
-        value_ok = copy_config_text(config.sta_password, sizeof(config.sta_password), value, true);
+        value_ok = copy_config_text(config->sta_password, sizeof(config->sta_password), value, true);
     } else if (KEY_IS("udp_port")) {
         value_ok = parse_u32(value, &number) && number <= UINT16_MAX;
-        if (value_ok) config.udp_port = (uint16_t)number;
+        if (value_ok) config->udp_port = (uint16_t)number;
     } else if (KEY_IS("tcp_port")) {
         value_ok = parse_u32(value, &number) && number <= UINT16_MAX;
-        if (value_ok) config.tcp_port = (uint16_t)number;
+        if (value_ok) config->tcp_port = (uint16_t)number;
     } else if (KEY_IS("usb_mode")) {
-        if (strcmp(value, "log") == 0) config.usb_mode = AIRLINK_USB_LOG_CLI;
-        else if (strcmp(value, "mavlink") == 0) config.usb_mode = AIRLINK_USB_MAVLINK;
+        if (strcmp(value, "log") == 0) config->usb_mode = AIRLINK_USB_LOG_CLI;
+        else if (strcmp(value, "mavlink") == 0) config->usb_mode = AIRLINK_USB_MAVLINK;
         else value_ok = false;
     } else if (KEY_IS("bridge_role")) {
         if (strcmp(value, "off") == 0) {
-            config.bridge_enabled = false;
-            config.bridge_role = AIRLINK_BRIDGE_OFF;
-            config.wifi_mode = AIRLINK_WIFI_AP;
-            config.usb_mode = AIRLINK_USB_LOG_CLI;
+            config->bridge_enabled = false;
+            config->bridge_role = AIRLINK_BRIDGE_OFF;
+            config->wifi_mode = AIRLINK_WIFI_AP;
+            config->usb_mode = AIRLINK_USB_LOG_CLI;
         } else if (strcmp(value, "air") == 0) {
-            config.bridge_enabled = true;
-            config.bridge_role = AIRLINK_BRIDGE_AIR;
-            config.wifi_mode = AIRLINK_WIFI_AP;
-            config.usb_mode = AIRLINK_USB_LOG_CLI;
+            config->bridge_enabled = true;
+            config->bridge_role = AIRLINK_BRIDGE_AIR;
+            config->wifi_mode = AIRLINK_WIFI_AP;
+            config->usb_mode = AIRLINK_USB_LOG_CLI;
         } else if (strcmp(value, "ground") == 0) {
-            config.bridge_enabled = true;
-            config.bridge_role = AIRLINK_BRIDGE_GROUND;
-            config.wifi_mode = AIRLINK_WIFI_STA;
-            config.usb_mode = AIRLINK_USB_MAVLINK;
+            config->bridge_enabled = true;
+            config->bridge_role = AIRLINK_BRIDGE_GROUND;
+            config->wifi_mode = AIRLINK_WIFI_STA;
+            config->usb_mode = AIRLINK_USB_MAVLINK;
         } else {
             value_ok = false;
         }
     } else if (KEY_IS("can_bitrate")) {
         value_ok = parse_u32(value, &number);
-        if (value_ok) config.can_bitrate = number;
+        if (value_ok) config->can_bitrate = number;
     } else if (KEY_IS("led_brightness")) {
         value_ok = parse_u32(value, &number) && number <= UINT8_MAX;
-        if (value_ok) config.led_brightness = (uint8_t)number;
+        if (value_ok) config->led_brightness = (uint8_t)number;
     } else if (KEY_IS("admin_password")) {
-        value_ok = copy_config_text(config.admin_password, sizeof(config.admin_password), value, false);
+        value_ok = copy_config_text(config->admin_password, sizeof(config->admin_password), value, false);
     } else {
-        recognized = false;
+        *recognized = false;
     }
 #undef KEY_IS
+    return value_ok;
+}
+
+static void config_set(const char *arguments)
+{
+    if (airlink_router_fc_armed()) {
+        airlink_usb_write_cli("ERR flight controller armed\r\n");
+        return;
+    }
+    airlink_config_t config;
+    airlink_config_get(&config);
+    bool recognized = false;
+    const bool value_ok = config_apply_value(&config, arguments, &recognized);
 
     if (!recognized) {
         airlink_usb_write_cli("ERR unknown config key; use config help\r\n");
@@ -301,12 +365,76 @@ static void config_set(const char *arguments)
     }
 }
 
+static void config_transaction_expire(void)
+{
+    if (s_config_transaction_active && esp_timer_get_time() > s_config_transaction_deadline_us) {
+        memset(&s_staged_config, 0, sizeof(s_staged_config));
+        s_config_transaction_active = false;
+    }
+}
+
+static void config_transaction(const char *line)
+{
+    config_transaction_expire();
+    if (strcmp(line, "config begin") == 0) {
+        if (airlink_router_fc_armed()) {
+            airlink_usb_write_cli("ERR flight controller armed\r\n");
+            return;
+        }
+        airlink_config_get(&s_staged_config);
+        s_config_transaction_active = true;
+        s_config_transaction_deadline_us = esp_timer_get_time() + CONFIG_TRANSACTION_TIMEOUT_US;
+        airlink_usb_write_cli("OK transaction begun timeout_s=30\r\n");
+    } else if (strncmp(line, "config stage ", 13) == 0) {
+        if (!s_config_transaction_active) {
+            airlink_usb_write_cli("ERR no active transaction\r\n");
+            return;
+        }
+        bool recognized = false;
+        const bool value_ok = config_apply_value(&s_staged_config, line + 13, &recognized);
+        if (!recognized) airlink_usb_write_cli("ERR unknown config key; use config help\r\n");
+        else if (!value_ok) airlink_usb_write_cli("ERR invalid staged value\r\n");
+        else {
+            s_config_transaction_deadline_us = esp_timer_get_time() + CONFIG_TRANSACTION_TIMEOUT_US;
+            airlink_usb_write_cli("OK staged\r\n");
+        }
+    } else if (strcmp(line, "config validate") == 0) {
+        if (!s_config_transaction_active) airlink_usb_write_cli("ERR no active transaction\r\n");
+        else if (!airlink_config_validate(&s_staged_config)) airlink_usb_write_cli("ERR invalid staged configuration\r\n");
+        else airlink_usb_write_cli("OK valid\r\n");
+    } else if (strcmp(line, "config commit") == 0) {
+        if (!s_config_transaction_active) {
+            airlink_usb_write_cli("ERR no active transaction\r\n");
+        } else if (airlink_router_fc_armed()) {
+            airlink_usb_write_cli("ERR flight controller armed\r\n");
+        } else if (!airlink_config_validate(&s_staged_config)) {
+            airlink_usb_write_cli("ERR invalid staged configuration\r\n");
+        } else if (airlink_config_save(&s_staged_config) != ESP_OK) {
+            airlink_usb_write_cli("ERR could not save configuration\r\n");
+        } else {
+            memset(&s_staged_config, 0, sizeof(s_staged_config));
+            s_config_transaction_active = false;
+            airlink_usb_write_cli("OK committed; reboot required\r\n");
+        }
+    } else if (strcmp(line, "config abort") == 0) {
+        memset(&s_staged_config, 0, sizeof(s_staged_config));
+        s_config_transaction_active = false;
+        airlink_usb_write_cli("OK transaction aborted\r\n");
+    }
+}
+
 static void handle_config(const char *line)
 {
     if (strcmp(line, "config show") == 0) {
         config_show();
     } else if (strcmp(line, "config help") == 0) {
         config_help();
+    } else if (strcmp(line, "config begin") == 0 ||
+               strncmp(line, "config stage ", 13) == 0 ||
+               strcmp(line, "config validate") == 0 ||
+               strcmp(line, "config commit") == 0 ||
+               strcmp(line, "config abort") == 0) {
+        config_transaction(line);
     } else if (strncmp(line, "config set ", 11) == 0) {
         config_set(line + 11);
     } else if (strcmp(line, "config reset") == 0) {
@@ -346,6 +474,29 @@ static int usb_log_tee(const char *format, va_list args)
     return result;
 }
 
+static bool escape_emit(const uint8_t *data, size_t length, void *context)
+{
+    (void)context;
+    return airlink_router_ingest(AIRLINK_ENDPOINT_ID_USB, data, length) == ESP_OK;
+}
+
+/* Returns true after consuming an escape sequence and provides the first byte
+ * that belongs to the CLI. Bytes that cannot be part of the sequence are
+ * forwarded in their original order, including overlapping '+' prefixes. */
+static bool escape_process(airlink_escape_matcher_t *matcher, const uint8_t *input,
+                           size_t length, size_t *cli_offset)
+{
+    const airlink_escape_result_t result = airlink_escape_feed(
+        matcher, (const uint8_t *)USB_CLI_ESCAPE, sizeof(USB_CLI_ESCAPE) - 1U,
+        input, length, (uint64_t)esp_timer_get_time(), escape_emit, NULL, cli_offset);
+    if (result != AIRLINK_ESCAPE_MATCHED) return false;
+    airlink_router_unregister(AIRLINK_ENDPOINT_ID_USB);
+    s_mode = AIRLINK_USB_LOG_CLI;
+    s_console_vprintf = esp_log_set_vprintf(usb_log_tee);
+    airlink_usb_write_cli("\r\nOK temporary USB CLI; reboot restores configured mode.\r\n> ");
+    return true;
+}
+
 esp_err_t airlink_usb_write_cli(const char *text)
 {
     if (text == NULL || s_mode != AIRLINK_USB_LOG_CLI) return ESP_ERR_INVALID_STATE;
@@ -356,9 +507,25 @@ esp_err_t airlink_usb_write_cli(const char *text)
 static void handle_builtin(const char *line)
 {
     if (strcmp(line, "help") == 0) {
-        airlink_usb_write_cli("commands: help, status, config ..., reboot, usb log, usb mavlink, factory ...\r\n");
+        airlink_usb_write_cli("commands: help, status, config ..., wifi scan, reboot, usb log, usb mavlink, factory ...\r\n");
     } else if (strcmp(line, "status") == 0) {
         status_show();
+    } else if (strcmp(line, "wifi scan") == 0) {
+        if (airlink_router_fc_armed() || airlink_ota_in_progress()) {
+            airlink_usb_write_cli("ERR wifi scan not allowed\r\n");
+        } else {
+            const size_t capacity = 8U * 1024U;
+            char *json = malloc(capacity);
+            if (json == NULL || airlink_wifi_scan_json(json, capacity) != ESP_OK) {
+                free(json);
+                airlink_usb_write_cli("ERR wifi scan failed\r\n");
+            } else {
+                airlink_usb_write_cli("OK wifi scan\r\n");
+                airlink_usb_write_cli(json);
+                airlink_usb_write_cli("\r\n");
+                free(json);
+            }
+        }
     } else if (strncmp(line, "config", 6) == 0 &&
                (line[6] == '\0' || line[6] == ' ')) {
         handle_config(line);
@@ -394,10 +561,11 @@ static void handle_builtin(const char *line)
 static void usb_task(void *argument)
 {
     (void)argument;
-    uint8_t rx[256];
+    uint8_t rx[USB_RX_CHUNK];
     char line[192];
     size_t line_length = 0;
     usb_packet_t packet;
+    airlink_escape_matcher_t escape = {0};
     if (s_mode == AIRLINK_USB_LOG_CLI) airlink_usb_write_cli("\r\nAirLink LOG_CLI ready. Type help.\r\n> ");
     while (true) {
         if (s_mode == AIRLINK_USB_MAVLINK) {
@@ -406,20 +574,18 @@ static void usb_task(void *argument)
             }
         }
         const int count = usb_serial_jtag_read_bytes(rx, sizeof(rx), pdMS_TO_TICKS(10));
-        if (count <= 0) continue;
-        if (s_mode == AIRLINK_USB_MAVLINK) {
-            if ((size_t)count == strlen(USB_CLI_ESCAPE) &&
-                memcmp(rx, USB_CLI_ESCAPE, strlen(USB_CLI_ESCAPE)) == 0) {
-                airlink_router_unregister(AIRLINK_ENDPOINT_ID_USB);
-                s_mode = AIRLINK_USB_LOG_CLI;
-                s_console_vprintf = esp_log_set_vprintf(usb_log_tee);
-                airlink_usb_write_cli("\r\nOK temporary USB CLI; reboot restores configured mode.\r\n> ");
-            } else {
-                airlink_router_ingest(AIRLINK_ENDPOINT_ID_USB, rx, (size_t)count);
+        if (count <= 0) {
+            if (s_mode == AIRLINK_USB_MAVLINK && escape.length > 0) {
+                airlink_escape_flush_expired(&escape, (uint64_t)esp_timer_get_time(),
+                                             USB_ESCAPE_TIMEOUT_US, escape_emit, NULL);
             }
             continue;
         }
-        for (int i = 0; i < count; ++i) {
+        size_t cli_offset = 0;
+        if (s_mode == AIRLINK_USB_MAVLINK) {
+            if (!escape_process(&escape, rx, (size_t)count, &cli_offset)) continue;
+        }
+        for (size_t i = cli_offset; i < (size_t)count; ++i) {
             if (rx[i] == '\r' || rx[i] == '\n') {
                 if (line_length == 0) continue;
                 line[line_length] = '\0';
@@ -436,6 +602,13 @@ static void usb_task(void *argument)
 esp_err_t airlink_usb_start(airlink_usb_mode_t mode)
 {
     s_mode = mode;
+    /* Host serial stacks may pulse RTS while opening the native USB port.
+     * ESP32-C5 otherwise converts that edge into a software reset, which can
+     * create an endless open/reset/re-enumerate loop. Initial flashing remains
+     * available through the documented physical BOOT procedure because this
+     * volatile bit is set only after the AirLink application has started. */
+    REG_SET_BIT(USB_SERIAL_JTAG_CHIP_RST_REG,
+                USB_SERIAL_JTAG_USB_UART_CHIP_RST_DIS);
     usb_serial_jtag_driver_config_t config = {
         .tx_buffer_size = 4096,
         .rx_buffer_size = 2048,

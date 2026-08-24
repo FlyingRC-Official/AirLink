@@ -247,7 +247,7 @@ static void provisioning_record_erase(void)
 
 static esp_err_t save_locked(const airlink_config_t *config)
 {
-    const uint32_t generation = s_generation + 1U;
+    const uint32_t generation = s_generation == UINT32_MAX ? UINT32_MAX : s_generation + 1U;
     ESP_RETURN_ON_ERROR(write_record(config, generation), TAG, "write configuration");
     s_config = *config;
     s_generation = generation;
@@ -297,12 +297,15 @@ out:
     }
     bool credentials_changed = false;
     if (identity_present) {
-        credentials_changed = strcmp(s_config.serial_number, identity.serial_number) != 0 ||
-                              strcmp(s_config.ap_password, identity.initial_password) != 0 ||
-                              strcmp(s_config.admin_password, identity.initial_password) != 0;
+        credentials_changed = strcmp(s_config.serial_number, identity.serial_number) != 0;
         strlcpy(s_config.serial_number, identity.serial_number, sizeof(s_config.serial_number));
-        strlcpy(s_config.ap_password, identity.initial_password, sizeof(s_config.ap_password));
-        strlcpy(s_config.admin_password, identity.initial_password, sizeof(s_config.admin_password));
+        /* load_defaults() already seeds factory credentials on first boot and
+         * factory reset. A valid A/B configuration owns later password changes;
+         * never replace them merely because a factory identity is present. */
+        if (defaults) {
+            strlcpy(s_config.ap_password, identity.initial_password, sizeof(s_config.ap_password));
+            strlcpy(s_config.admin_password, identity.initial_password, sizeof(s_config.admin_password));
+        }
     }
     if (provision_present) {
         if (airlink_provision_record_valid(&provision) && !identity_present) {
@@ -312,7 +315,7 @@ out:
             strlcpy(s_config.admin_password, provision.password, sizeof(s_config.admin_password));
             ESP_LOGI(TAG, "applied one-time USB provisioning password");
         } else if (identity_present) {
-            ESP_LOGW(TAG, "factory identity present; preserving factory credentials");
+            ESP_LOGI(TAG, "factory identity present; preserving saved credentials");
         } else {
             ESP_LOGW(TAG, "invalid USB provisioning record ignored");
         }

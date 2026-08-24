@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <string.h>
 #include "airlink_mavlink.h"
+#include "airlink_stream.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -102,6 +103,16 @@ static bool vehicle_side(airlink_endpoint_type_t type)
     return type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE;
 }
 
+static uint32_t add_u32_saturated(uint32_t value, uint32_t increment)
+{
+    return UINT32_MAX - value < increment ? UINT32_MAX : value + increment;
+}
+
+static uint64_t add_u64_saturated(uint64_t value, size_t increment)
+{
+    return UINT64_MAX - value < increment ? UINT64_MAX : value + increment;
+}
+
 static void route(const endpoint_slot_t *source, const uint8_t *data, size_t length,
                   bool high_priority)
 {
@@ -114,10 +125,10 @@ static void route(const endpoint_slot_t *source, const uint8_t *data, size_t len
         const esp_err_t err = destination->endpoint.send(data, length, high_priority,
                                                           destination->endpoint.context);
         if (err == ESP_OK) {
-            destination->stats.bytes_out += length;
-            destination->stats.frames_out++;
+            destination->stats.bytes_out = add_u64_saturated(destination->stats.bytes_out, length);
+            destination->stats.frames_out = add_u32_saturated(destination->stats.frames_out, 1U);
         } else {
-            destination->stats.queue_drops++;
+            destination->stats.queue_drops = add_u32_saturated(destination->stats.queue_drops, 1U);
         }
     }
 }
@@ -128,12 +139,21 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
     xSemaphoreTake(s_lock, portMAX_DELAY);
     endpoint_slot_t *source = find_endpoint(endpoint_id);
     if (source == NULL) { xSemaphoreGive(s_lock); return ESP_ERR_NOT_FOUND; }
-    source->stats.bytes_in += length;
+    source->stats.bytes_in = add_u64_saturated(source->stats.bytes_in, length);
     source->stats.last_activity_us = esp_timer_get_time();
 
     if (s_mode == AIRLINK_ROUTE_TRANSPARENT) {
-        route(source, data, length, false);
-        source->stats.frames_in++;
+        /* Endpoint queues intentionally remain MAVLink-frame sized. Transparent
+         * input is a byte stream, so split large UART/TCP reads into ordered
+         * queue-safe chunks instead of rejecting the entire read block. */
+        size_t offset = 0;
+        while (offset < length) {
+            const size_t chunk = airlink_stream_chunk_size(length - offset,
+                                                           AIRLINK_MAX_FRAME_SIZE);
+            route(source, data + offset, chunk, false);
+            source->stats.frames_in = add_u32_saturated(source->stats.frames_in, 1U);
+            offset += chunk;
+        }
         xSemaphoreGive(s_lock);
         return ESP_OK;
     }
@@ -141,9 +161,9 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
     for (size_t i = 0; i < length; ++i) {
         airlink_mavlink_frame_t frame;
         if (!airlink_mavlink_parse_byte(&source->parser, data[i], &frame)) continue;
-        source->stats.frames_in++;
+        source->stats.frames_in = add_u32_saturated(source->stats.frames_in, 1U);
         if (frame.crc_known && !frame.crc_valid) {
-            source->stats.parse_errors++;
+            source->stats.parse_errors = add_u32_saturated(source->stats.parse_errors, 1U);
             continue;
         }
         if (vehicle_side(source->endpoint.type)) {

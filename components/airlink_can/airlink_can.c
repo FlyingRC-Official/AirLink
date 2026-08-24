@@ -39,6 +39,11 @@ static TaskHandle_t s_can_task;
 static CanardInstance s_canard;
 static uint8_t s_canard_arena[2048];
 
+static inline void increment_saturated_u32(uint32_t *value)
+{
+    if (*value != UINT32_MAX) (*value)++;
+}
+
 #define DRONECAN_NODE_STATUS_ID 341U
 #define DRONECAN_NODE_STATUS_SIGNATURE UINT64_C(0x0f0868d0c1a7c6f1)
 
@@ -66,7 +71,7 @@ static void on_transfer(CanardInstance *instance, CanardRxTransfer *transfer)
         canardDecodeScalar(transfer, 34, 3, false, &node->mode) != 3) return;
     node->seen = true;
     node->last_seen_us = esp_timer_get_time();
-    node->frames++;
+    increment_saturated_u32(&node->frames);
 }
 
 static bool IRAM_ATTR on_rx(twai_node_handle_t handle, const twai_rx_done_event_data_t *event, void *context)
@@ -85,7 +90,7 @@ static bool IRAM_ATTR on_state(twai_node_handle_t handle, const twai_state_chang
 {
     (void)handle; (void)context;
     if (event->new_sta == TWAI_ERROR_BUS_OFF) {
-        s_status.bus_off_count++;
+        increment_saturated_u32(&s_status.bus_off_count);
         atomic_store(&s_recover_requested, true);
     }
     return false;
@@ -94,7 +99,7 @@ static bool IRAM_ATTR on_state(twai_node_handle_t handle, const twai_state_chang
 static bool IRAM_ATTR on_error(twai_node_handle_t handle, const twai_error_event_data_t *event, void *context)
 {
     (void)handle; (void)context;
-    if (event->err_flags.arb_lost) s_status.arbitration_lost++;
+    if (event->err_flags.arb_lost) increment_saturated_u32(&s_status.arbitration_lost);
     return false;
 }
 
@@ -107,7 +112,9 @@ static void parse_dronecan(const rx_item_t *item)
     };
     memcpy(frame.data, item->data, item->header.dlc);
     const int16_t result = canardHandleRxFrame(&s_canard, &frame, (uint64_t)esp_timer_get_time());
-    if (result < 0 && result != -CANARD_ERROR_RX_NOT_WANTED) s_status.dronecan_errors++;
+    if (result < 0 && result != -CANARD_ERROR_RX_NOT_WANTED) {
+        increment_saturated_u32(&s_status.dronecan_errors);
+    }
 }
 
 static void can_task(void *argument)
@@ -119,7 +126,7 @@ static void can_task(void *argument)
     while (true) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         if (xQueueReceive(s_rx_queue, &item, pdMS_TO_TICKS(100)) == pdTRUE) {
-            s_status.rx_frames++;
+            increment_saturated_u32(&s_status.rx_frames);
             parse_dronecan(&item);
             airlink_board_act_pulse();
         }
@@ -207,7 +214,7 @@ esp_err_t airlink_can_factory_transmit(uint32_t id, bool extended,
         .buffer = copy, .buffer_len = length,
     };
     const esp_err_t err = twai_node_transmit(s_node, &frame, 20);
-    if (err == ESP_OK) s_status.tx_frames++;
+    if (err == ESP_OK) increment_saturated_u32(&s_status.tx_frames);
     return err;
 }
 

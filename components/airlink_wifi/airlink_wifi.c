@@ -15,6 +15,7 @@
 #include "airlink_mavlink.h"
 #include "airlink_router.h"
 #include "esp_check.h"
+#include "esp_app_desc.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -32,6 +33,8 @@
 #define NETWORK_TASK_PRIORITY 19
 #define BRIDGE_TASK_PRIORITY 17
 #define TCP_TX_BURST 8U
+#define DISCOVERY_PORT 49374
+#define DISCOVERY_REQUEST "AIRLINK_DISCOVER_V1\n"
 
 typedef struct {
     uint16_t length;
@@ -68,8 +71,67 @@ static udp_client_t s_udp[AIRLINK_MAX_UDP_CLIENTS];
 static tcp_client_t s_tcp[AIRLINK_MAX_TCP_CLIENTS];
 static esp_timer_handle_t s_reconnect_timer;
 static uint32_t s_reconnect_attempts;
+
+static uint32_t increment_saturated(uint32_t value)
+{
+    return value == UINT32_MAX ? UINT32_MAX : value + 1U;
+}
 static int s_bridge_socket = -1;
 static QueueHandle_t s_bridge_tx_queue;
+
+static const char *bridge_role_name(airlink_bridge_role_t role)
+{
+    return role == AIRLINK_BRIDGE_AIR ? "air" :
+           role == AIRLINK_BRIDGE_GROUND ? "ground" : "off";
+}
+
+static void discovery_task(void *argument)
+{
+    (void)argument;
+    const int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "discovery socket failed errno=%d", errno);
+        vTaskDelete(NULL);
+        return;
+    }
+    int reuse = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+    struct sockaddr_in bind_address = {
+        .sin_family = AF_INET,
+        .sin_port = htons(DISCOVERY_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(fd, (struct sockaddr *)&bind_address, sizeof(bind_address)) != 0) {
+        ESP_LOGE(TAG, "discovery bind failed errno=%d", errno);
+        close(fd);
+        vTaskDelete(NULL);
+        return;
+    }
+    int64_t last_reply_us = 0;
+    while (true) {
+        uint8_t request[64];
+        struct sockaddr_in peer = {0};
+        socklen_t peer_length = sizeof(peer);
+        const ssize_t received = recvfrom(fd, request, sizeof(request), 0,
+                                          (struct sockaddr *)&peer, &peer_length);
+        if (received != (ssize_t)(sizeof(DISCOVERY_REQUEST) - 1U) ||
+            memcmp(request, DISCOVERY_REQUEST, sizeof(DISCOVERY_REQUEST) - 1U) != 0) continue;
+        const int64_t now = esp_timer_get_time();
+        if (now - last_reply_us < INT64_C(250000)) continue;
+        last_reply_us = now;
+        const esp_app_desc_t *app = esp_app_get_description();
+        char response[512];
+        const int length = snprintf(response, sizeof(response),
+            "{\"protocol\":\"airlink-discovery/v1\",\"product\":\"%s\","
+            "\"hardware_id\":\"%s\",\"serial\":\"%s\",\"firmware\":\"%s\","
+            "\"role\":\"%s\",\"http_port\":80}",
+            AIRLINK_PRODUCT_NAME, AIRLINK_HARDWARE_ID, s_config.serial_number,
+            app->version, bridge_role_name(s_config.bridge_role));
+        if (length > 0 && length < (int)sizeof(response)) {
+            sendto(fd, response, (size_t)length, 0, (struct sockaddr *)&peer, peer_length);
+        }
+    }
+}
 
 static esp_err_t bridge_send(const uint8_t *data, size_t length,
                              bool high_priority, void *context)
@@ -455,7 +517,7 @@ static void bridge_task(void *argument)
         }
         if (s_bridge_socket < 0) {
             if (!bridge_connect()) {
-                s_status.bridge_reconnects++;
+                s_status.bridge_reconnects = increment_saturated(s_status.bridge_reconnects);
                 vTaskDelay(pdMS_TO_TICKS(500));
                 continue;
             }
@@ -468,7 +530,7 @@ static void bridge_task(void *argument)
         } else if (received == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
             ESP_LOGW(TAG, "bridge disconnected");
             bridge_disconnect();
-            s_status.bridge_reconnects++;
+            s_status.bridge_reconnects = increment_saturated(s_status.bridge_reconnects);
             has_pending = false;
             continue;
         }
@@ -490,7 +552,7 @@ static void bridge_task(void *argument)
                        esp_timer_get_time() - pending_progress_us > TCP_STALL_TIMEOUT_US) {
                 ESP_LOGW(TAG, "bridge transmit stalled");
                 bridge_disconnect();
-                s_status.bridge_reconnects++;
+                s_status.bridge_reconnects = increment_saturated(s_status.bridge_reconnects);
                 has_pending = false;
             }
         }
@@ -510,7 +572,9 @@ static void wifi_event(void *argument, esp_event_base_t base, int32_t id, void *
     if (base == WIFI_EVENT && id == WIFI_EVENT_AP_START) s_status.ap_started = true;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_status.sta_connected = false;
-        s_status.reconnects++;
+        s_status.reconnects_total = increment_saturated(s_status.reconnects_total);
+        s_status.reconnects = s_status.reconnects_total;
+        s_status.reconnect_streak = increment_saturated(s_status.reconnect_streak);
         const uint32_t shift = s_reconnect_attempts > 5 ? 5 : s_reconnect_attempts++;
         const uint64_t delay_us = (uint64_t)(250U << shift) * 1000U;
         if (esp_timer_is_active(s_reconnect_timer)) esp_timer_stop(s_reconnect_timer);
@@ -518,7 +582,7 @@ static void wifi_event(void *argument, esp_event_base_t base, int32_t id, void *
     }
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_status.sta_connected = true;
-        s_status.reconnects = 0;
+        s_status.reconnect_streak = 0;
         s_reconnect_attempts = 0;
         if (esp_timer_is_active(s_reconnect_timer)) esp_timer_stop(s_reconnect_timer);
     }
@@ -589,6 +653,9 @@ esp_err_t airlink_wifi_start(const airlink_config_t *config)
      * band; calling this earlier returns ESP_ERR_WIFI_NOT_STARTED. */
     ESP_RETURN_ON_ERROR(esp_wifi_set_band_mode(band), TAG, "Wi-Fi band");
     if (config->wifi_mode != AIRLINK_WIFI_AP) esp_wifi_connect();
+    if (xTaskCreate(discovery_task, "airlink_discovery", 3072, NULL, 8, NULL) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
     if (config->bridge_enabled && config->bridge_role == AIRLINK_BRIDGE_GROUND) {
         s_bridge_tx_queue = xQueueCreate(NET_PACKET_QUEUE, sizeof(net_packet_t));
         if (s_bridge_tx_queue == NULL) return ESP_ERR_NO_MEM;
@@ -629,4 +696,89 @@ size_t airlink_wifi_clients_json(char *output, size_t capacity)
     }
     if (used < capacity) used += (size_t)snprintf(output + used, capacity - used, "],\"tcp_count\":%u}", s_status.tcp_clients);
     return used < capacity ? used : capacity - 1U;
+}
+
+static size_t json_escape_append(char *output, size_t capacity, size_t used,
+                                 const uint8_t *text, size_t length)
+{
+    for (size_t i = 0; i < length && used + 2U < capacity; ++i) {
+        const uint8_t byte = text[i];
+        if (byte == '\"' || byte == '\\') {
+            output[used++] = '\\';
+            output[used++] = (char)byte;
+        } else if (byte >= 0x20U) {
+            output[used++] = (char)byte;
+        }
+    }
+    if (used < capacity) output[used] = '\0';
+    return used;
+}
+
+static const char *auth_name(wifi_auth_mode_t mode)
+{
+    switch (mode) {
+        case WIFI_AUTH_OPEN: return "open";
+        case WIFI_AUTH_WEP: return "wep";
+        case WIFI_AUTH_WPA_PSK: return "wpa";
+        case WIFI_AUTH_WPA2_PSK: return "wpa2";
+        case WIFI_AUTH_WPA_WPA2_PSK: return "wpa-wpa2";
+        case WIFI_AUTH_WPA3_PSK: return "wpa3";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "wpa2-wpa3";
+        default: return "secured";
+    }
+}
+
+esp_err_t airlink_wifi_scan_json(char *output, size_t capacity)
+{
+    if (output == NULL || capacity < 32U) return ESP_ERR_INVALID_ARG;
+    wifi_mode_t original_mode;
+    ESP_RETURN_ON_ERROR(esp_wifi_get_mode(&original_mode), TAG, "get Wi-Fi mode");
+    if (original_mode == WIFI_MODE_AP) {
+        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "temporary scan mode");
+    }
+    const esp_err_t scan_error = esp_wifi_scan_start(NULL, true);
+    if (scan_error != ESP_OK) {
+        if (original_mode == WIFI_MODE_AP) esp_wifi_set_mode(original_mode);
+        return scan_error;
+    }
+    uint16_t count = 32;
+    wifi_ap_record_t records[32] = {0};
+    esp_err_t err = esp_wifi_scan_get_ap_records(&count, records);
+    if (original_mode == WIFI_MODE_AP) esp_wifi_set_mode(original_mode);
+    if (err != ESP_OK) return err;
+
+    for (uint16_t i = 0; i < count; ++i) {
+        for (uint16_t j = i + 1U; j < count; ++j) {
+            if (records[j].rssi > records[i].rssi) {
+                const wifi_ap_record_t temporary = records[i];
+                records[i] = records[j];
+                records[j] = temporary;
+            }
+        }
+    }
+    size_t used = (size_t)snprintf(output, capacity, "{\"networks\":[");
+    size_t emitted = 0;
+    for (uint16_t i = 0; i < count && used + 96U < capacity; ++i) {
+        const size_t ssid_length = strnlen((const char *)records[i].ssid, sizeof(records[i].ssid));
+        if (ssid_length == 0) continue;
+        bool duplicate = false;
+        for (uint16_t previous = 0; previous < i; ++previous) {
+            if (strncmp((const char *)records[previous].ssid,
+                        (const char *)records[i].ssid, sizeof(records[i].ssid)) == 0) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+        used += (size_t)snprintf(output + used, capacity - used,
+                                 "%s{\"ssid\":\"", emitted++ > 0 ? "," : "");
+        used = json_escape_append(output, capacity, used, records[i].ssid, ssid_length);
+        used += (size_t)snprintf(output + used, capacity - used,
+            "\",\"rssi\":%d,\"channel\":%u,\"band\":\"%s\",\"auth\":\"%s\"}",
+            records[i].rssi, records[i].primary, records[i].primary >= 30U ? "5g" : "2g",
+            auth_name(records[i].authmode));
+    }
+    if (used + 3U >= capacity) return ESP_ERR_NO_MEM;
+    snprintf(output + used, capacity - used, "]}");
+    return ESP_OK;
 }
