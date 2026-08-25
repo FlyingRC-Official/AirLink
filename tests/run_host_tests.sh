@@ -128,7 +128,7 @@ assert '#define USB_TASK_STACK_SIZE 8192' in usb
 assert 'usb download' in usb
 assert 'USB_DOWNLOAD_WINDOW_US' in usb
 assert 'usb_queue_drops=' in usb
-assert 'config.bridge_role = AIRLINK_BRIDGE_GROUND' in usb
+assert 'config->bridge_role = AIRLINK_BRIDGE_GROUND' in usb
 assert 'hardware_ok && !recovery && !ground_bridge' in main
 assert 'airlink_usb_reset_guard_enable();' in main
 assert 'ESP_ERROR_CHECK(airlink_usb_start' not in main
