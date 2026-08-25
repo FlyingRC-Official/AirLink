@@ -112,11 +112,11 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ### Local USB flasher
 
-The `v0.3.1-dev` release includes a single-file local Web Serial flasher for
-Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.1-dev.zip`, then run
+The `v0.3.2-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.2-dev.zip`, then run
 `start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
 Edge is required; Safari is not supported. The page downloads only the fixed
-`v0.3.1-dev` firmware from the matching GitHub tag and accepts it only when the
+`v0.3.2-dev` firmware from the matching GitHub tag and accepts it only when the
 manifest SHA-256 and GitHub Release digest both match.
 
 The flasher never performs a whole-chip erase and never writes normal NVS or
@@ -190,6 +190,35 @@ blocked while an armed flight-controller heartbeat is latched. `config show`
 includes credentials because USB is treated as a local physical management
 interface; protect physical access to deployed devices.
 
+### Crash logs and collection
+
+Release firmware stores panic and task-watchdog coredumps, including the ESP-IDF
+log ring, in the dedicated flash partition at `0x630000`. `status` and the Web
+diagnostic API report `coredump_present`, `coredump_size`, `previous_boot_stage`
+and `boot_stage`. Boot-stage breadcrumbs are persisted without credentials so a
+subsequent physical restart can show which service was last reached. Routine
+`ESP_LOG` output remains live-only on USB `LOG_CLI` and the independent UART0
+test pads; the reserved diagnostics filesystem is not used for continuous log
+writes, avoiding flash wear and accidental credential retention.
+
+Capture a responsive device without changing flash:
+
+```powershell
+python tools/collect_crash_diagnostics.py --port COM14
+```
+
+To preserve and decode a coredump, use the matching build ELF and request the
+bounded downloader window:
+
+```powershell
+python tools/collect_crash_diagnostics.py --port COM14 --read-coredump --open-downloader --elf build-release/airlink.elf
+```
+
+If USB is enumerated but the application cannot accept commands, hold BOOT while
+reconnecting the module and replace `--open-downloader` with
+`--bootloader-ready`. Reports are written below ignored `diagnostic-reports/`,
+redact password/token-shaped text, and never erase the coredump.
+
 ### Two-AirLink wireless bridge
 
 Both units run the same firmware. Configure the unit attached to the flight
@@ -218,6 +247,22 @@ Selecting `air` automatically selects Wi-Fi AP plus USB `LOG_CLI`; selecting
 selector for later configuration over Wi-Fi. In ground mode, writing the exact
 ASCII sequence `+++AIRLINK-CLI\r\n` to USB temporarily switches that boot into
 the local CLI; reboot restores the configured USB MAVLink mode.
+
+For repeatable post-update acceptance, run the two-unit automation with the
+air-side and ground-side USB ports. `--pair` is optional and atomically copies
+the air AP credentials into the ground unit without printing or persisting the
+password on the host. `--reconnect` deliberately reboots the air unit and
+requires telemetry to recover within the configured timeout.
+
+```powershell
+python tools/wifi_bridge_acceptance.py --air-port COM14 --ground-port COM20 --pair --reconnect --json-out diagnostic-reports/bridge.json
+```
+
+The command exits nonzero on version/role mismatch, no valid heartbeat,
+incomplete or CRC-invalid parameter transfer, any queue/overflow counter above
+the configured limit, or failed automatic reconnect. Omit `--pair` after the
+units are paired; use `--max-queue-drops N` only when deliberately qualifying a
+documented nonzero limit.
 
 ### Runtime and build modes
 

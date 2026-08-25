@@ -13,6 +13,7 @@
 #include "airlink_ota.h"
 #include "airlink_router.h"
 #include "airlink_uart.h"
+#include "airlink_usb.h"
 #include "airlink_wifi.h"
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -36,7 +37,9 @@ static void set_local_file_cors(httpd_req_t *request)
 {
     httpd_resp_set_hdr(request, "Access-Control-Allow-Origin", "null");
     httpd_resp_set_hdr(request, "Access-Control-Allow-Methods", "GET, PUT, POST, OPTIONS");
-    httpd_resp_set_hdr(request, "Access-Control-Allow-Headers", "Authorization, Content-Type");
+    httpd_resp_set_hdr(request, "Access-Control-Allow-Headers",
+                       "Authorization, Content-Type, X-AirLink-Hardware, X-AirLink-Flash-Bytes, "
+                       "X-AirLink-PSRAM-Bytes, X-AirLink-SHA256");
     httpd_resp_set_hdr(request, "Access-Control-Allow-Private-Network", "true");
     httpd_resp_set_hdr(request, "Access-Control-Max-Age", "600");
 }
@@ -101,16 +104,7 @@ static esp_err_t status_handler(httpd_req_t *request)
     const uint8_t vehicle_endpoint = active_config.bridge_role == AIRLINK_BRIDGE_GROUND ?
                                      AIRLINK_ENDPOINT_ID_BRIDGE : AIRLINK_ENDPOINT_ID_FC_UART;
     airlink_endpoint_stats_t fc; airlink_router_get_stats(vehicle_endpoint, &fc);
-    uint32_t bridge_tx_queue_drops = active_config.bridge_role == AIRLINK_BRIDGE_GROUND ?
-                                     fc.queue_drops : 0U;
-    if (active_config.bridge_role == AIRLINK_BRIDGE_AIR) {
-        for (uint8_t i = 0; i < AIRLINK_MAX_TCP_CLIENTS; ++i) {
-            airlink_endpoint_stats_t client = {0};
-            airlink_router_get_stats((uint8_t)(AIRLINK_ENDPOINT_ID_TCP_BASE + i), &client);
-            bridge_tx_queue_drops = UINT32_MAX - bridge_tx_queue_drops < client.queue_drops ?
-                                    UINT32_MAX : bridge_tx_queue_drops + client.queue_drops;
-        }
-    }
+    const uint32_t bridge_tx_queue_drops = wifi.bridge_tx_queue_drops;
     const esp_app_desc_t *app = esp_app_get_description();
     char json[2048];
     snprintf(json, sizeof(json),
@@ -118,11 +112,19 @@ static esp_err_t status_handler(httpd_req_t *request)
         "\"build_date\":\"%s %s\",\"serial\":\"%s\",\"recovery\":%s,\"read_only\":%s,"
         "\"fc_seen\":%s,\"fc_armed\":%s,\"uptime_s\":%" PRIu32 ","
         "\"free_heap\":%" PRIu32 ",\"min_heap\":%" PRIu32 ",\"boot_count\":%" PRIu32 ","
-        "\"reset_reason\":%" PRIu32 ",\"wifi\":{\"ap\":%s,\"sta\":%s,\"rssi\":%d,"
+        "\"reset_reason\":%" PRIu32 ",\"diagnostics\":{\"coredump_present\":%s,"
+        "\"coredump_size\":%" PRIu32 ",\"previous_boot_stage\":\"%s\","
+        "\"boot_stage\":\"%s\"},\"wifi\":{\"ap\":%s,\"sta\":%s,\"rssi\":%d,"
         "\"channel\":%u,\"udp_clients\":%u,\"tcp_clients\":%u,"
         "\"reconnects\":%" PRIu32 ",\"reconnects_total\":%" PRIu32 ","
         "\"reconnect_streak\":%" PRIu32 ",\"bridge_connected\":%s,"
-        "\"bridge_reconnects\":%" PRIu32 "},"
+        "\"bridge_reconnects\":%" PRIu32 ",\"bridge_last_errno\":%" PRIu32
+        ",\"tcp_last_errno\":%" PRIu32 ",\"bridge_connects_total\":%" PRIu32
+        ",\"tcp_accepts_total\":%" PRIu32 ",\"tcp_disconnects_total\":%" PRIu32
+        ",\"tcp_queue_alloc_failures\":%" PRIu32
+        ",\"tcp_queue_peak\":%" PRIu32 ",\"tcp_queue_current\":%" PRIu32
+        ",\"tcp_send_would_block\":%" PRIu32
+        ",\"network_task_loops\":%" PRIu32 ",\"tcp_listener_active\":%s},"
         "\"uart\":{\"bytes_in\":%" PRIu64 ",\"bytes_out\":%" PRIu64 ",\"frames_in\":%" PRIu32
         ",\"drops\":%" PRIu32 ",\"vehicle_queue_drops\":%" PRIu32
         ",\"bridge_tx_queue_drops\":%" PRIu32 ",\"rx_overflow\":%" PRIu32
@@ -140,10 +142,18 @@ static esp_err_t status_handler(httpd_req_t *request)
         s_read_only_mode ? "true" : "false",
         diag.fc_seen ? "true" : "false", diag.fc_armed ? "true" : "false",
         diag.uptime_seconds, diag.free_heap, diag.minimum_free_heap, diag.boot_count,
-        diag.reset_reason, wifi.ap_started ? "true" : "false", wifi.sta_connected ? "true" : "false",
+        diag.reset_reason, diag.coredump_present ? "true" : "false", diag.coredump_size,
+        diag.previous_boot_stage, diag.boot_stage,
+        wifi.ap_started ? "true" : "false", wifi.sta_connected ? "true" : "false",
         wifi.rssi, wifi.channel, wifi.udp_clients, wifi.tcp_clients,
         wifi.reconnects, wifi.reconnects_total, wifi.reconnect_streak,
         wifi.bridge_connected ? "true" : "false", wifi.bridge_reconnects,
+        wifi.bridge_last_errno, wifi.tcp_last_errno,
+        wifi.bridge_connects_total, wifi.tcp_accepts_total,
+        wifi.tcp_disconnects_total, wifi.tcp_queue_alloc_failures,
+        wifi.tcp_queue_peak, wifi.tcp_queue_current, wifi.tcp_send_would_block,
+        wifi.network_task_loops,
+        wifi.tcp_listener_active ? "true" : "false",
         fc.bytes_in, fc.bytes_out, fc.frames_in, fc.queue_drops, fc.queue_drops,
         bridge_tx_queue_drops, uart.rx_overflow, uart.driver_restarts,
         uart.high_queue_drops, uart.normal_queue_drops,
@@ -353,8 +363,9 @@ static esp_err_t reboot_handler(httpd_req_t *request)
 {
     if (!authorized(request)) return require_auth(request);
     if (!destructive_allowed()) { httpd_resp_set_status(request, "423 Locked"); return send_json(request, "{\"error\":\"flight_controller_armed\"}"); }
+    (void)airlink_diag_mark_boot_stage("restarting");
     send_json(request, "{\"ok\":true}");
-    vTaskDelay(pdMS_TO_TICKS(100)); esp_restart(); return ESP_OK;
+    vTaskDelay(pdMS_TO_TICKS(100)); airlink_usb_system_restart();
 }
 
 static esp_err_t reset_handler(httpd_req_t *request)
@@ -363,7 +374,8 @@ static esp_err_t reset_handler(httpd_req_t *request)
     if (!destructive_allowed()) { httpd_resp_set_status(request, "423 Locked"); return send_json(request, "{\"error\":\"flight_controller_armed\"}"); }
     esp_err_t err = airlink_config_factory_reset();
     if (err != ESP_OK) return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "reset failed");
-    send_json(request, "{\"ok\":true}"); vTaskDelay(pdMS_TO_TICKS(100)); esp_restart(); return ESP_OK;
+    (void)airlink_diag_mark_boot_stage("factory-restarting");
+    send_json(request, "{\"ok\":true}"); vTaskDelay(pdMS_TO_TICKS(100)); airlink_usb_system_restart();
 }
 
 static esp_err_t ota_handler(httpd_req_t *request)
@@ -372,7 +384,8 @@ static esp_err_t ota_handler(httpd_req_t *request)
     if (!destructive_allowed()) { httpd_resp_set_status(request, "423 Locked"); return send_json(request, "{\"error\":\"ota_not_allowed\"}"); }
     const esp_err_t err = airlink_ota_http_upload(request);
     if (err != ESP_OK) { httpd_resp_set_status(request, "400 Bad Request"); char json[96]; snprintf(json, sizeof(json), "{\"error\":\"%s\"}", esp_err_to_name(err)); return send_json(request, json); }
-    send_json(request, "{\"ok\":true,\"rebooting\":true}"); vTaskDelay(pdMS_TO_TICKS(200)); esp_restart(); return ESP_OK;
+    (void)airlink_diag_mark_boot_stage("ota-restarting");
+    send_json(request, "{\"ok\":true,\"rebooting\":true}"); vTaskDelay(pdMS_TO_TICKS(200)); airlink_usb_system_restart();
 }
 
 esp_err_t airlink_web_start(bool recovery_mode, bool read_only_mode)

@@ -59,11 +59,15 @@ static void status_task(void *argument)
 {
     (void)argument;
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    bool healthy_stage_recorded = false;
     while (true) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         airlink_wifi_status_t wifi = {0};
         airlink_wifi_get_status(&wifi);
         const bool healthy = services_healthy(&wifi);
+        if (healthy && !healthy_stage_recorded) {
+            if (airlink_diag_mark_boot_stage("healthy") == ESP_OK) healthy_stage_recorded = true;
+        }
         airlink_ota_services_ready(healthy);
         airlink_ota_health_heartbeat(healthy);
         if (s_services.led_started) {
@@ -95,6 +99,7 @@ void app_main(void)
     ESP_ERROR_CHECK(airlink_router_init(snapshot.value.route_mode));
     s_services.led_started = service_started("status LED", airlink_led_start(snapshot.value.led_brightness));
     ESP_ERROR_CHECK(airlink_ota_init());
+    (void)airlink_diag_mark_boot_stage("core-ready");
 
     const bool hardware_ok = board.chip_ok && board.flash_ok && board.psram_ok;
     const bool recovery = !hardware_ok || board.recovery_requested;
@@ -102,6 +107,7 @@ void app_main(void)
                                         AIRLINK_USB_LOG_CLI : snapshot.value.usb_mode;
     s_services.normal_mode = hardware_ok && !recovery;
     s_services.usb_started = service_started("USB", airlink_usb_start(usb_mode));
+    (void)airlink_diag_mark_boot_stage("usb-ready");
 
     /* Recovery keeps only USB LOG_CLI, Wi-Fi configuration access and the web
      * service alive. Telemetry UART/CAN endpoints never start in recovery. */
@@ -117,9 +123,12 @@ void app_main(void)
         s_services.can_started = service_started("CAN",
                                                   airlink_can_start(snapshot.value.can_bitrate, factory_test));
     }
+    (void)airlink_diag_mark_boot_stage("io-ready");
     s_services.wifi_started = service_started("Wi-Fi", airlink_wifi_start(&snapshot.value));
+    (void)airlink_diag_mark_boot_stage("wifi-started");
     s_services.web_started = service_started("web API", airlink_web_start(recovery, !hardware_ok));
     service_started("factory service", airlink_factory_start(&board, factory_test));
+    (void)airlink_diag_mark_boot_stage("services-started");
 
     if (s_services.normal_mode) {
         ESP_LOGI(TAG, "normal telemetry services ready");

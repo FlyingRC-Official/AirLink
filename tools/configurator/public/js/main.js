@@ -400,19 +400,35 @@ async function sha256(blob) {
 
 async function validateOtaFiles(manifest, firmware) {
   if (manifest.hardware_id !== "airlink-c5-mesh-v1" || manifest.target_chip !== "esp32c5" || manifest.flash_bytes !== 8388608 || manifest.psram_bytes !== 8388608) throw new Error("固件硬件、芯片或 N8R8 容量要求不匹配");
-  if (!/^v?0\.3\.1-dev$/i.test(manifest.version)) throw new Error("固件版本不是 V0.3.1-DEV");
+  if (!/^v?0\.3\.2-dev$/i.test(manifest.version)) throw new Error("固件版本不是 V0.3.2-DEV");
   const digest = await sha256(firmware);
   if (digest !== String(manifest.images?.["airlink.bin"] || "").toLowerCase()) throw new Error("airlink.bin SHA-256 与 manifest 不一致");
-  return digest;
+  return {
+    sha256: digest,
+    hardwareId: manifest.hardware_id,
+    flashBytes: manifest.flash_bytes,
+    psramBytes: manifest.psram_bytes,
+  };
 }
 
 async function performOta(manifest, firmware) {
-  await validateOtaFiles(manifest, firmware);
+  const metadata = await validateOtaFiles(manifest, firmware);
   ui.otaState.textContent = "正在上传…"; ui.otaProgress.value = 0;
-  await transport.ota(firmware, (progress) => { ui.otaProgress.value = progress; ui.otaState.textContent = `上传 ${Math.round(progress * 100)}%`; });
+  await transport.ota(firmware, (progress) => { ui.otaProgress.value = progress; ui.otaState.textContent = `上传 ${Math.round(progress * 100)}%`; }, metadata);
   ui.otaState.textContent = "模块正在重启并进行健康确认";
   await reconnectAfterReboot(transport, currentConfig, false);
-  if (!/0\.3\.1-dev/i.test(String(currentStatus?.firmware || ""))) throw new Error("设备已恢复在线，但仍报告旧版本；OTA 可能已回滚");
+  if (!/0\.3\.2-dev/i.test(String(currentStatus?.firmware || ""))) throw new Error("设备已恢复在线，但仍报告旧版本；OTA 可能已回滚");
+  const healthDeadline = Date.now() + 45000;
+  while (Date.now() < healthDeadline) {
+    const status = transport.type === "usb" ? (await transport.refresh()).status : await transport.call("/api/v1/status");
+    updateStatus(status, currentConfig);
+    const imageState = Number(status.ota?.image_state ?? -1);
+    if (imageState === 2) break;
+    if (imageState === 3 || imageState === 4) throw new Error(`OTA 镜像状态 ${imageState}，设备已拒绝或回滚`);
+    ui.otaState.textContent = "模块在线，等待固件健康确认…";
+    await sleep(2500);
+  }
+  if (Number(currentStatus?.ota?.image_state ?? -1) !== 2) throw new Error("45 秒内未完成 OTA 健康确认，不能报告升级成功");
   ui.otaState.textContent = "OTA 成功，设备健康确认通过";
 }
 
@@ -430,11 +446,11 @@ async function otaFromGithub() {
   if (!transport || busy) return;
   setBusy(true, "正在读取 GitHub Prerelease…");
   try {
-    const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.3.1-dev";
+    const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.3.2-dev";
     const releaseResponse = await fetch(api, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
     if (!releaseResponse.ok) throw new Error(`GitHub Release HTTP ${releaseResponse.status}`);
     const release = await releaseResponse.json();
-    if (release.draft || !release.prerelease || release.tag_name !== "v0.3.1-dev") throw new Error("GitHub Release 状态或标签不符合 V0.3.1-DEV");
+    if (release.draft || !release.prerelease || release.tag_name !== "v0.3.2-dev") throw new Error("GitHub Release 状态或标签不符合 V0.3.2-DEV");
     const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
     const manifestAsset = assets.get("manifest.json"); const firmwareAsset = assets.get("airlink.bin");
     if (!manifestAsset || !firmwareAsset) throw new Error("GitHub Release 缺少 manifest.json 或 airlink.bin");
@@ -445,8 +461,8 @@ async function otaFromGithub() {
     if (!manifestResponse.ok || !firmwareResponse.ok) throw new Error("GitHub Release 资产下载失败");
     const manifestBlob = await manifestResponse.blob(); const firmwareBlob = await firmwareResponse.blob();
     if (/^sha256:[0-9a-f]{64}$/i.test(manifestAsset.digest || "") && await sha256(manifestBlob) !== manifestAsset.digest.slice(7).toLowerCase()) throw new Error("manifest.json 与 GitHub digest 不一致");
-    const digest = await validateOtaFiles(JSON.parse(await manifestBlob.text()), firmwareBlob);
-    if (/^sha256:[0-9a-f]{64}$/i.test(firmwareAsset.digest || "") && digest !== firmwareAsset.digest.slice(7).toLowerCase()) throw new Error("airlink.bin 与 GitHub digest 不一致");
+    const metadata = await validateOtaFiles(JSON.parse(await manifestBlob.text()), firmwareBlob);
+    if (/^sha256:[0-9a-f]{64}$/i.test(firmwareAsset.digest || "") && metadata.sha256 !== firmwareAsset.digest.slice(7).toLowerCase()) throw new Error("airlink.bin 与 GitHub digest 不一致");
     await performOta(JSON.parse(await manifestBlob.text()), firmwareBlob);
   } catch (error) { ui.otaState.textContent = `失败：${error.message}`; log(error.message, "error"); toast(error.message, true); }
   finally { setBusy(false); if (transport) setConnected(true); }

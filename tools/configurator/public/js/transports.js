@@ -63,13 +63,17 @@ export class WifiTransport {
     ]);
     return { status, clients, can, collected_at: new Date().toISOString() };
   }
-  async ota(file, onProgress = () => {}) {
+  async ota(file, onProgress = () => {}, metadata = {}) {
     const authorization = btoa(unescape(encodeURIComponent(`${this.username}:${this.password}`)));
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
       request.open("POST", `${this.baseUrl}/api/v1/ota`);
       request.setRequestHeader("Authorization", `Basic ${authorization}`);
       request.setRequestHeader("Content-Type", "application/octet-stream");
+      request.setRequestHeader("X-AirLink-Hardware", metadata.hardwareId);
+      request.setRequestHeader("X-AirLink-Flash-Bytes", String(metadata.flashBytes));
+      request.setRequestHeader("X-AirLink-PSRAM-Bytes", String(metadata.psramBytes));
+      request.setRequestHeader("X-AirLink-SHA256", metadata.sha256);
       request.upload.onprogress = (event) => onProgress(event.lengthComputable ? event.loaded / event.total : 0);
       request.onerror = () => reject(new Error("固件上传连接中断"));
       request.onload = () => request.status >= 200 && request.status < 300 ? resolve(JSON.parse(request.responseText || "{}")) : reject(new Error(`OTA 上传失败：HTTP ${request.status}`));
@@ -163,12 +167,28 @@ export class UsbTransport {
         reconnects_total: Number(read("wifi_reconnects_total") || read("wifi_reconnects") || 0),
         reconnect_streak: Number(read("wifi_reconnect_streak") || 0),
         bridge_connected: Number(read("bridge_connected")) === 1,
+        bridge_reconnects: Number(read("bridge_reconnects") || 0),
+        bridge_last_errno: Number(read("bridge_last_errno") || 0),
+        tcp_last_errno: Number(read("tcp_last_errno") || 0),
+        bridge_connects_total: Number(read("bridge_connects_total") || 0),
+        tcp_accepts_total: Number(read("tcp_accepts_total") || 0),
+        tcp_disconnects_total: Number(read("tcp_disconnects_total") || 0),
+        tcp_queue_alloc_failures: Number(read("tcp_queue_alloc_failures") || 0),
+        tcp_queue_peak: Number(read("tcp_queue_peak") || 0),
+        tcp_queue_current: Number(read("tcp_queue_current") || 0),
+        tcp_send_would_block: Number(read("tcp_send_would_block") || 0),
+        network_task_loops: Number(read("network_task_loops") || 0),
+        tcp_listener_active: Number(read("tcp_listener_active")) === 1,
       },
       uart: {
         bytes_in: Number(read("fc_bytes_in") || 0), bytes_out: Number(read("fc_bytes_out") || 0),
         vehicle_queue_drops: Number(read("vehicle_queue_drops") || 0),
         bridge_tx_queue_drops: Number(read("bridge_tx_queue_drops") || read("bridge_tcp_queue_drops") || 0),
         rx_overflow: Number(read("uart_rx_overflow") || 0),
+      },
+      ota: {
+        running_partition: read("ota_running_partition") || "",
+        image_state: Number(read("ota_image_state") || -1),
       },
     };
   }
@@ -284,5 +304,28 @@ export class HelperTransport extends WifiTransport {
       throw new Error(result.error || `本地助手代理失败：HTTP ${response.status}`);
     }
     return result;
+  }
+  async ota(file, onProgress = () => {}, metadata = {}) {
+    const authorization = btoa(unescape(encodeURIComponent(`${this.username}:${this.password}`)));
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open("POST", `${this.helperUrl}/helper/v1/ota`);
+      request.setRequestHeader("Authorization", `Basic ${authorization}`);
+      request.setRequestHeader("Content-Type", "application/octet-stream");
+      request.setRequestHeader("X-AirLink-Session", this.session);
+      request.setRequestHeader("X-AirLink-Target", this.target);
+      request.setRequestHeader("X-AirLink-Hardware", metadata.hardwareId);
+      request.setRequestHeader("X-AirLink-Flash-Bytes", String(metadata.flashBytes));
+      request.setRequestHeader("X-AirLink-PSRAM-Bytes", String(metadata.psramBytes));
+      request.setRequestHeader("X-AirLink-SHA256", metadata.sha256);
+      request.upload.onprogress = (event) => onProgress(event.lengthComputable ? event.loaded / event.total : 0);
+      request.onerror = () => reject(new Error("本地助手 OTA 上传连接中断"));
+      request.onload = () => {
+        const result = JSON.parse(request.responseText || "{}");
+        if (request.status >= 200 && request.status < 300) resolve(result);
+        else reject(new Error(result.error || `本地助手 OTA 失败：HTTP ${request.status}`));
+      };
+      request.send(file);
+    });
   }
 }

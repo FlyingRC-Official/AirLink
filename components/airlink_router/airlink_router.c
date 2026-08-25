@@ -30,9 +30,9 @@ static size_t s_dedup_cursor;
 static SemaphoreHandle_t s_lock;
 static airlink_route_mode_t s_mode;
 static atomic_bool s_fc_armed;
+static atomic_int_fast64_t s_fc_last_seen_us;
 static bool s_fc_identity_known;
 static uint8_t s_fc_system_id;
-static int64_t s_fc_last_seen_us;
 
 static endpoint_slot_t *find_endpoint(uint8_t id)
 {
@@ -50,7 +50,7 @@ esp_err_t airlink_router_init(airlink_route_mode_t mode)
     atomic_store(&s_fc_armed, false);
     s_fc_identity_known = false;
     s_fc_system_id = 0;
-    s_fc_last_seen_us = 0;
+    atomic_store(&s_fc_last_seen_us, 0);
     s_mode = mode;
     s_lock = xSemaphoreCreateMutex();
     return s_lock != NULL ? ESP_OK : ESP_ERR_NO_MEM;
@@ -113,6 +113,39 @@ static uint64_t add_u64_saturated(uint64_t value, size_t increment)
     return UINT64_MAX - value < increment ? UINT64_MAX : value + increment;
 }
 
+static void observe_vehicle_frame(const endpoint_slot_t *source,
+                                  const airlink_mavlink_frame_t *frame)
+{
+    if (!vehicle_side(source->endpoint.type)) return;
+    atomic_store(&s_fc_last_seen_us, esp_timer_get_time());
+    if (!airlink_mavlink_heartbeat_is_autopilot(frame)) return;
+    if (!s_fc_identity_known) {
+        s_fc_identity_known = true;
+        s_fc_system_id = frame->system_id;
+        ESP_LOGI(TAG, "pinned FC heartbeat sysid=%u compid=%u",
+                 frame->system_id, frame->component_id);
+    }
+    if (frame->system_id == s_fc_system_id) {
+        atomic_store(&s_fc_armed, frame->heartbeat_armed);
+    }
+}
+
+/* Transparent mode preserves every input byte, but still passively observes
+ * valid MAVLink heartbeats on vehicle-side streams. This parser never changes
+ * or delays the forwarded bytes; it only maintains the armed safety latch. */
+static void observe_vehicle_safety(endpoint_slot_t *source,
+                                   const uint8_t *data, size_t length)
+{
+    if (!vehicle_side(source->endpoint.type)) return;
+    for (size_t i = 0; i < length; ++i) {
+        airlink_mavlink_frame_t frame;
+        if (!airlink_mavlink_parse_byte(&source->parser, data[i], &frame)) continue;
+        if (frame.crc_known && !frame.crc_valid) continue;
+        observe_vehicle_frame(source, &frame);
+    }
+    source->stats.parse_errors = source->parser.errors;
+}
+
 static void route(const endpoint_slot_t *source, const uint8_t *data, size_t length,
                   bool high_priority)
 {
@@ -146,6 +179,7 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
         /* Endpoint queues intentionally remain MAVLink-frame sized. Transparent
          * input is a byte stream, so split large UART/TCP reads into ordered
          * queue-safe chunks instead of rejecting the entire read block. */
+        observe_vehicle_safety(source, data, length);
         size_t offset = 0;
         while (offset < length) {
             const size_t chunk = airlink_stream_chunk_size(length - offset,
@@ -167,18 +201,7 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
             continue;
         }
         if (vehicle_side(source->endpoint.type)) {
-            s_fc_last_seen_us = esp_timer_get_time();
-            if (airlink_mavlink_heartbeat_is_autopilot(&frame)) {
-                if (!s_fc_identity_known) {
-                    s_fc_identity_known = true;
-                    s_fc_system_id = frame.system_id;
-                    ESP_LOGI(TAG, "pinned FC heartbeat sysid=%u compid=%u",
-                             frame.system_id, frame.component_id);
-                }
-                if (frame.system_id == s_fc_system_id) {
-                    atomic_store(&s_fc_armed, frame.heartbeat_armed);
-                }
-            }
+            observe_vehicle_frame(source, &frame);
         } else if (duplicate_network_frame(frame.bytes, frame.length)) {
             continue;
         }
@@ -199,9 +222,10 @@ void airlink_router_set_mode(airlink_route_mode_t mode)
 
 bool airlink_router_fc_seen(void)
 {
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    const int64_t last_seen_us = s_fc_last_seen_us;
-    xSemaphoreGive(s_lock);
+    /* This runs in the watchdog-supervised status task.  Never wait on the
+     * routing mutex here: a saturated output queue used to let the high
+     * priority UART task starve status until the task watchdog reset the C5. */
+    const int64_t last_seen_us = atomic_load(&s_fc_last_seen_us);
     return esp_timer_get_time() - last_seen_us < INT64_C(3000000);
 }
 /* Once an armed heartbeat has been observed, loss of telemetry is not evidence

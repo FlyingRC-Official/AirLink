@@ -17,6 +17,7 @@
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -29,10 +30,11 @@
 #define UDP_TIMEOUT_US INT64_C(30000000)
 #define TCP_STALL_TIMEOUT_US INT64_C(10000000)
 #define BRIDGE_CONNECT_TIMEOUT_US INT64_C(2000000)
-#define NET_PACKET_QUEUE 64
+#define NET_PACKET_QUEUE 256
 #define NETWORK_TASK_PRIORITY 19
 #define BRIDGE_TASK_PRIORITY 17
-#define TCP_TX_BURST 8U
+#define TCP_TX_BATCH_PACKETS 32U
+#define TCP_TX_BATCH_BYTES 1440U
 #define DISCOVERY_PORT 49374
 #define DISCOVERY_REQUEST "AIRLINK_DISCOVER_V1\n"
 
@@ -56,8 +58,12 @@ typedef struct {
     int socket_fd;
     struct sockaddr_in address;
     QueueHandle_t tx_queue;
-    net_packet_t pending;
+    uint8_t *tx_queue_storage;
+    StaticQueue_t tx_queue_control;
+    uint8_t pending[TCP_TX_BATCH_BYTES];
+    size_t pending_length;
     size_t pending_offset;
+    uint32_t pending_packets;
     int64_t pending_progress_us;
     bool has_pending;
 } tcp_client_t;
@@ -76,8 +82,39 @@ static uint32_t increment_saturated(uint32_t value)
 {
     return value == UINT32_MAX ? UINT32_MAX : value + 1U;
 }
+
+static uint32_t add_saturated(uint32_t value, uint32_t increment)
+{
+    return UINT32_MAX - value < increment ? UINT32_MAX : value + increment;
+}
+
+static bool socket_error_is_temporary(int error)
+{
+    if (error == EAGAIN || error == EWOULDBLOCK || error == EINPROGRESS ||
+        error == ENOMEM) return true;
+#ifdef ENOBUFS
+    if (error == ENOBUFS) return true;
+#endif
+    return false;
+}
 static int s_bridge_socket = -1;
 static QueueHandle_t s_bridge_tx_queue;
+static uint8_t *s_bridge_tx_queue_storage;
+static StaticQueue_t s_bridge_tx_queue_control;
+
+static QueueHandle_t create_packet_queue(uint8_t **storage, StaticQueue_t *control)
+{
+    const size_t bytes = (size_t)NET_PACKET_QUEUE * sizeof(net_packet_t);
+    *storage = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (*storage == NULL) return NULL;
+    QueueHandle_t queue = xQueueCreateStatic(NET_PACKET_QUEUE, sizeof(net_packet_t),
+                                             *storage, control);
+    if (queue == NULL) {
+        heap_caps_free(*storage);
+        *storage = NULL;
+    }
+    return queue;
+}
 
 static const char *bridge_role_name(airlink_bridge_role_t role)
 {
@@ -142,7 +179,12 @@ static esp_err_t bridge_send(const uint8_t *data, size_t length,
         length > AIRLINK_MAX_FRAME_SIZE) return ESP_ERR_INVALID_STATE;
     net_packet_t packet = {.length = (uint16_t)length};
     memcpy(packet.data, data, length);
-    return xQueueSend(s_bridge_tx_queue, &packet, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
+    /* Router callbacks execute while its endpoint table is locked.  They must
+     * never block behind network I/O: doing so can starve status/diagnostics
+     * and previously caused a task-watchdog reboot during bridge congestion. */
+    if (xQueueSend(s_bridge_tx_queue, &packet, 0) == pdTRUE) return ESP_OK;
+    s_status.bridge_tx_queue_drops = increment_saturated(s_status.bridge_tx_queue_drops);
+    return ESP_ERR_NO_MEM;
 }
 
 static void bridge_disconnect(void)
@@ -156,47 +198,41 @@ static void bridge_disconnect(void)
         close(s_bridge_socket);
         s_bridge_socket = -1;
     }
-    if (s_bridge_tx_queue != NULL) xQueueReset(s_bridge_tx_queue);
+    if (s_bridge_tx_queue != NULL) {
+        s_status.bridge_tx_queue_drops = add_saturated(
+            s_status.bridge_tx_queue_drops, (uint32_t)uxQueueMessagesWaiting(s_bridge_tx_queue));
+        xQueueReset(s_bridge_tx_queue);
+    }
 }
 
 static bool bridge_connect(void)
 {
     const int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (fd < 0) return false;
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     int yes = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+    /* ESP32-C5/lwIP can report a non-blocking connect socket as writable with
+     * SO_ERROR=0 before the TCP handshake is actually established. A recv on
+     * that socket then returns 0 and creates a rapid false-connect loop. Use a
+     * bounded blocking handshake and switch to non-blocking mode only after
+     * connect() has definitively succeeded. */
+    const struct timeval connect_timeout = {
+        .tv_sec = (long)(BRIDGE_CONNECT_TIMEOUT_US / INT64_C(1000000)),
+        .tv_usec = (long)(BRIDGE_CONNECT_TIMEOUT_US % INT64_C(1000000)),
+    };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &connect_timeout, sizeof(connect_timeout));
     struct sockaddr_in peer = {
         .sin_family = AF_INET,
         .sin_port = htons(s_config.tcp_port),
         .sin_addr.s_addr = inet_addr("192.168.4.1"),
     };
-    const int result = connect(fd, (struct sockaddr *)&peer, sizeof(peer));
-    if (result != 0 && errno != EINPROGRESS) {
+    if (connect(fd, (struct sockaddr *)&peer, sizeof(peer)) != 0) {
+        s_status.bridge_last_errno = (uint32_t)errno;
         close(fd);
         return false;
     }
-    if (result != 0) {
-        fd_set write_set;
-        FD_ZERO(&write_set);
-        FD_SET(fd, &write_set);
-        struct timeval timeout = {
-            .tv_sec = (long)(BRIDGE_CONNECT_TIMEOUT_US / INT64_C(1000000)),
-            .tv_usec = (long)(BRIDGE_CONNECT_TIMEOUT_US % INT64_C(1000000)),
-        };
-        if (select(fd + 1, NULL, &write_set, NULL, &timeout) <= 0) {
-            close(fd);
-            return false;
-        }
-        int socket_error = 0;
-        socklen_t error_length = sizeof(socket_error);
-        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) != 0 ||
-            socket_error != 0) {
-            close(fd);
-            return false;
-        }
-    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     s_bridge_socket = fd;
     const airlink_router_endpoint_t endpoint = {
         .id = AIRLINK_ENDPOINT_ID_BRIDGE,
@@ -210,6 +246,8 @@ static bool bridge_connect(void)
         return false;
     }
     s_status.bridge_connected = true;
+    s_status.bridge_last_errno = 0;
+    s_status.bridge_connects_total = increment_saturated(s_status.bridge_connects_total);
     ESP_LOGI(TAG, "bridge connected to 192.168.4.1:%u", s_config.tcp_port);
     return true;
 }
@@ -257,7 +295,13 @@ static esp_err_t tcp_send(const uint8_t *data, size_t length, bool high_priority
     if (client == NULL || !client->used || length > AIRLINK_MAX_FRAME_SIZE) return ESP_ERR_INVALID_STATE;
     net_packet_t packet = {.length = (uint16_t)length};
     memcpy(packet.data, data, length);
-    return xQueueSend(client->tx_queue, &packet, 0) == pdTRUE ? ESP_OK : ESP_ERR_NO_MEM;
+    if (xQueueSend(client->tx_queue, &packet, 0) == pdTRUE) {
+        const uint32_t depth = (uint32_t)uxQueueMessagesWaiting(client->tx_queue);
+        if (depth > s_status.tcp_queue_peak) s_status.tcp_queue_peak = depth;
+        return ESP_OK;
+    }
+    s_status.bridge_tx_queue_drops = increment_saturated(s_status.bridge_tx_queue_drops);
+    return ESP_ERR_NO_MEM;
 }
 
 static bool datagram_has_acceptable_mavlink(const uint8_t *data, size_t length)
@@ -320,10 +364,16 @@ static void expire_udp(void)
 static void close_tcp(tcp_client_t *client)
 {
     if (!client->used) return;
+    s_status.tcp_disconnects_total = increment_saturated(s_status.tcp_disconnects_total);
+    const uint32_t abandoned = (uint32_t)uxQueueMessagesWaiting(client->tx_queue) +
+                               client->pending_packets;
+    s_status.bridge_tx_queue_drops = add_saturated(
+        s_status.bridge_tx_queue_drops, abandoned);
     airlink_router_unregister(client->endpoint_id);
     shutdown(client->socket_fd, SHUT_RDWR);
     close(client->socket_fd);
     if (client->tx_queue != NULL) vQueueDelete(client->tx_queue);
+    if (client->tx_queue_storage != NULL) heap_caps_free(client->tx_queue_storage);
     *client = (tcp_client_t){0};
     recount_clients();
 }
@@ -334,6 +384,7 @@ static void accept_tcp(void)
     socklen_t length = sizeof(address);
     const int fd = accept(s_tcp_listener, (struct sockaddr *)&address, &length);
     if (fd < 0) return;
+    s_status.tcp_accepts_total = increment_saturated(s_status.tcp_accepts_total);
     fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     int keepalive = 1, idle = 15, interval = 5, count = 3;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
@@ -357,9 +408,17 @@ static void accept_tcp(void)
         *client = (tcp_client_t){
             .used = true, .endpoint_id = AIRLINK_ENDPOINT_ID_TCP_BASE + (uint8_t)i,
             .socket_fd = fd, .address = address,
-            .tx_queue = xQueueCreate(NET_PACKET_QUEUE, sizeof(net_packet_t)),
         };
-        if (client->tx_queue == NULL) { close(fd); client->used = false; return; }
+        client->tx_queue = create_packet_queue(&client->tx_queue_storage,
+                                                &client->tx_queue_control);
+        if (client->tx_queue == NULL) {
+            s_status.tcp_queue_alloc_failures = increment_saturated(
+                s_status.tcp_queue_alloc_failures);
+            ESP_LOGE(TAG, "TCP queue PSRAM allocation failed");
+            close(fd);
+            client->used = false;
+            return;
+        }
         const airlink_router_endpoint_t endpoint = {
             .id = client->endpoint_id, .type = AIRLINK_ENDPOINT_TCP,
             .send = tcp_send, .context = client, .name = "tcp-client",
@@ -422,38 +481,60 @@ fail:
 
 static void service_tcp_tx(tcp_client_t *client)
 {
-    for (unsigned burst = 0; burst < TCP_TX_BURST && client->used; ++burst) {
-        if (!client->has_pending &&
-            xQueueReceive(client->tx_queue, &client->pending, 0) == pdTRUE) {
-            client->pending_offset = 0;
-            client->pending_progress_us = esp_timer_get_time();
-            client->has_pending = true;
+    if (!client->has_pending) {
+        client->pending_length = 0;
+        client->pending_offset = 0;
+        client->pending_packets = 0;
+        net_packet_t packet;
+        while (client->pending_packets < TCP_TX_BATCH_PACKETS &&
+               xQueuePeek(client->tx_queue, &packet, 0) == pdTRUE) {
+            if (client->pending_length + packet.length > sizeof(client->pending)) break;
+            if (xQueueReceive(client->tx_queue, &packet, 0) != pdTRUE) break;
+            memcpy(client->pending + client->pending_length, packet.data, packet.length);
+            client->pending_length += packet.length;
+            client->pending_packets++;
         }
-        if (!client->has_pending) return;
+        if (client->pending_length == 0) return;
+        client->pending_progress_us = esp_timer_get_time();
+        client->has_pending = true;
+    }
 
-        const size_t remaining = client->pending.length - client->pending_offset;
-        const ssize_t sent = send(client->socket_fd,
-                                  client->pending.data + client->pending_offset,
-                                  remaining, MSG_DONTWAIT);
-        if (sent > 0) {
-            client->pending_offset += (size_t)sent;
-            client->pending_progress_us = esp_timer_get_time();
-            if (client->pending_offset == client->pending.length) {
-                client->has_pending = false;
-                continue;
-            }
-            continue;
-        }
-        if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-            close_tcp(client);
-            return;
-        }
-        if (esp_timer_get_time() - client->pending_progress_us > TCP_STALL_TIMEOUT_US) {
-            ESP_LOGW(TAG, "closing stalled TCP client");
-            close_tcp(client);
+    const size_t remaining = client->pending_length - client->pending_offset;
+    const ssize_t sent = send(client->socket_fd,
+                              client->pending + client->pending_offset,
+                              remaining, MSG_DONTWAIT);
+    if (sent > 0) {
+        client->pending_offset += (size_t)sent;
+        client->pending_progress_us = esp_timer_get_time();
+        if (client->pending_offset == client->pending_length) {
+            client->has_pending = false;
+            client->pending_packets = 0;
         }
         return;
     }
+    const int socket_error = sent == 0 ? 0 : errno;
+    if (sent == 0 || !socket_error_is_temporary(socket_error)) {
+        s_status.tcp_last_errno = (uint32_t)socket_error;
+        ESP_LOGW(TAG, "closing TCP client after send errno=%d", socket_error);
+        close_tcp(client);
+        return;
+    }
+    s_status.tcp_send_would_block = increment_saturated(s_status.tcp_send_would_block);
+    if (esp_timer_get_time() - client->pending_progress_us > TCP_STALL_TIMEOUT_US) {
+        ESP_LOGW(TAG, "closing stalled TCP client");
+        close_tcp(client);
+    }
+}
+
+static uint32_t tcp_queue_current(void)
+{
+    uint32_t depth = 0;
+    for (size_t i = 0; i < AIRLINK_MAX_TCP_CLIENTS; ++i) {
+        if (!s_tcp[i].used || s_tcp[i].tx_queue == NULL) continue;
+        depth = add_saturated(depth, (uint32_t)uxQueueMessagesWaiting(s_tcp[i].tx_queue));
+        depth = add_saturated(depth, s_tcp[i].pending_packets);
+    }
+    return depth;
 }
 
 static void network_task(void *argument)
@@ -462,6 +543,7 @@ static void network_task(void *argument)
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     uint8_t rx[1024];
     while (true) {
+        s_status.network_task_loops = increment_saturated(s_status.network_task_loops);
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         struct sockaddr_in source;
         socklen_t source_length = sizeof(source);
@@ -485,9 +567,13 @@ static void network_task(void *argument)
             if (tcp_received > 0) {
                 airlink_router_ingest(client->endpoint_id, rx, (size_t)tcp_received);
             } else if (tcp_received == 0) {
+                s_status.tcp_last_errno = 0;
+                ESP_LOGW(TAG, "TCP client closed by peer");
                 close_tcp(client);
                 continue;
-            } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            } else if (!socket_error_is_temporary(errno)) {
+                s_status.tcp_last_errno = (uint32_t)errno;
+                ESP_LOGW(TAG, "closing TCP client after recv errno=%d", errno);
                 close_tcp(client);
                 continue;
             }
@@ -510,6 +596,10 @@ static void bridge_task(void *argument)
     while (true) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
         if (!s_status.sta_connected) {
+            if (has_pending) {
+                s_status.bridge_tx_queue_drops = increment_saturated(
+                    s_status.bridge_tx_queue_drops);
+            }
             bridge_disconnect();
             has_pending = false;
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -527,11 +617,19 @@ static void bridge_task(void *argument)
         const ssize_t received = recv(s_bridge_socket, rx, sizeof(rx), MSG_DONTWAIT);
         if (received > 0) {
             airlink_router_ingest(AIRLINK_ENDPOINT_ID_BRIDGE, rx, (size_t)received);
-        } else if (received == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
-            ESP_LOGW(TAG, "bridge disconnected");
+        } else if (received == 0 || !socket_error_is_temporary(errno)) {
+            const int socket_error = received == 0 ? 0 : errno;
+            s_status.bridge_last_errno = (uint32_t)socket_error;
+            ESP_LOGW(TAG, "bridge disconnected recv=%d errno=%d", (int)received,
+                     socket_error);
+            if (has_pending) {
+                s_status.bridge_tx_queue_drops = increment_saturated(
+                    s_status.bridge_tx_queue_drops);
+            }
             bridge_disconnect();
             s_status.bridge_reconnects = increment_saturated(s_status.bridge_reconnects);
             has_pending = false;
+            vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
 
@@ -548,12 +646,17 @@ static void bridge_task(void *argument)
                 pending_offset += (size_t)sent;
                 pending_progress_us = esp_timer_get_time();
                 if (pending_offset == pending.length) has_pending = false;
-            } else if (sent == 0 || (errno != EAGAIN && errno != EWOULDBLOCK) ||
+            } else if (sent == 0 || !socket_error_is_temporary(errno) ||
                        esp_timer_get_time() - pending_progress_us > TCP_STALL_TIMEOUT_US) {
-                ESP_LOGW(TAG, "bridge transmit stalled");
+                const int socket_error = sent == 0 ? 0 : errno;
+                s_status.bridge_last_errno = (uint32_t)socket_error;
+                ESP_LOGW(TAG, "bridge transmit stalled errno=%d", socket_error);
+                s_status.bridge_tx_queue_drops = increment_saturated(
+                    s_status.bridge_tx_queue_drops);
                 bridge_disconnect();
                 s_status.bridge_reconnects = increment_saturated(s_status.bridge_reconnects);
                 has_pending = false;
+                vTaskDelay(pdMS_TO_TICKS(500));
             }
         }
         vTaskDelay(pdMS_TO_TICKS(2));
@@ -649,6 +752,13 @@ esp_err_t airlink_wifi_start(const airlink_config_t *config)
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &sta), TAG, "STA config");
     }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Wi-Fi start");
+    /* AirLink carries a continuous low-latency serial stream.  The default
+     * modem-sleep policy can leave the STA asleep across several beacon
+     * intervals on a marginal link, filling the peer's TCP send window and
+     * eventually its application queue during MAVLink parameter bursts.
+     * Keep the radio awake while AirLink is running; this is a powered module,
+     * so deterministic bridge latency takes precedence over STA power saving. */
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), TAG, "Wi-Fi power save");
     /* ESP-IDF requires the driver to be started before selecting the active
      * band; calling this earlier returns ESP_ERR_WIFI_NOT_STARTED. */
     ESP_RETURN_ON_ERROR(esp_wifi_set_band_mode(band), TAG, "Wi-Fi band");
@@ -657,7 +767,8 @@ esp_err_t airlink_wifi_start(const airlink_config_t *config)
         return ESP_ERR_NO_MEM;
     }
     if (config->bridge_enabled && config->bridge_role == AIRLINK_BRIDGE_GROUND) {
-        s_bridge_tx_queue = xQueueCreate(NET_PACKET_QUEUE, sizeof(net_packet_t));
+        s_bridge_tx_queue = create_packet_queue(&s_bridge_tx_queue_storage,
+                                                &s_bridge_tx_queue_control);
         if (s_bridge_tx_queue == NULL) return ESP_ERR_NO_MEM;
         return xTaskCreate(bridge_task, "airlink_bridge", 6144, NULL,
                            BRIDGE_TASK_PRIORITY, NULL) == pdPASS ?
@@ -678,8 +789,27 @@ void airlink_wifi_get_status(airlink_wifi_status_t *status)
         s_status.channel = record.primary;
     }
     *status = s_status;
+    status->tcp_listener_active = s_tcp_listener >= 0;
+    status->tcp_queue_current = tcp_queue_current();
     if (s_config.bridge_enabled && s_config.bridge_role == AIRLINK_BRIDGE_AIR) {
         status->bridge_connected = status->tcp_clients > 0;
+    }
+}
+
+void airlink_wifi_prepare_restart(void)
+{
+    /* A C5 ROM system reset immediately discards the lwIP state.  Notify the
+     * peer first so a freshly booted ground unit cannot reuse a four-tuple
+     * while the air listener still has the old connection established.  The
+     * owning network task performs normal unregister/queue accounting during
+     * the caller's bounded pre-reset delay. */
+    if (s_bridge_socket >= 0) {
+        shutdown(s_bridge_socket, SHUT_RDWR);
+    }
+    for (size_t i = 0; i < AIRLINK_MAX_TCP_CLIENTS; ++i) {
+        if (s_tcp[i].used && s_tcp[i].socket_fd >= 0) {
+            shutdown(s_tcp[i].socket_fd, SHUT_RDWR);
+        }
     }
 }
 

@@ -9,6 +9,11 @@ import {
   RELEASE, loadReleaseFirmware, rawFirmwareUrl, releaseApiUrl, sha256,
 } from "../src/release-firmware.js";
 import { ESP32C5_LP_WDT, watchdogResetEsp32C5 } from "../src/esp32c5-reset.js";
+import {
+  ESP32C5_ECO2_STUB_MARKER, ESP32C5_SPI_REG_BASE, detectEsp32C5FlashSize,
+  installEsp32C5Eco2Workarounds,
+} from "../src/esp32c5-eco2.js";
+import stubV2 from "../src/esp32c5-stub-v2.json" with { type: "json" };
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -162,10 +167,37 @@ assert.match(mainSource, /flashSize:\s*"keep"/);
 assert.match(mainSource, /requestDownloaderWindow\(port\)/);
 assert.match(mainSource, /usb download/);
 assert.match(mainSource, /watchdogResetEsp32C5/);
+assert.match(mainSource, /installEsp32C5Eco2Workarounds/);
+assert.match(mainSource, /detectEsp32C5FlashSize/);
+assert.doesNotMatch(mainSource, /loader\.detectFlashSize\s*\(/);
 assert.match(resetSource, /0xd0000102/);
 assert.match(mainSource, /verifyApplicationBoot/);
 assert.match(mainSource, /firmware=\$\{RELEASE\.version\}/);
 assert.doesNotMatch(mainSource, /loader\.after\("hard_reset"\)/);
+
+assert.equal(ESP32C5_SPI_REG_BASE, 0x60003000);
+assert.equal(stubV2.entry, 1082135790);
+assert.equal(Buffer.from(stubV2.text, "base64").length, 7784);
+assert.equal(Buffer.from(stubV2.data, "base64").length, 216);
+const retryLog = [];
+const flashLoader = {
+  chip: { CHIP_NAME: "ESP32-C5", SPI_REG_BASE: 0x60002000 },
+  DETECTED_FLASH_SIZES: { 0x17: "8MB" },
+  ids: [0, 0xffffff, 0x1740ef],
+  async readFlashId() { return this.ids.shift(); },
+  info(message) { retryLog.push(message); },
+};
+assert.equal(await detectEsp32C5FlashSize(flashLoader, { attempts: 3, delayMs: 0 }), "8MB");
+assert.equal(flashLoader.chip.SPI_REG_BASE, ESP32C5_SPI_REG_BASE);
+assert.equal(retryLog.filter((line) => line.includes("正在重试")).length, 2);
+await assert.rejects(
+  detectEsp32C5FlashSize({ ...flashLoader, ids: [0], async readFlashId() { return 0; } }, { attempts: 1, delayMs: 0 }),
+  /未使用 4 MB 默认值/,
+);
+const stubLoader = { chip: { CHIP_NAME: "ESP32-C5" }, syncStubDetected: true, info() {} };
+installEsp32C5Eco2Workarounds(stubLoader);
+assert.equal(await stubLoader.runStub(), stubLoader.chip);
+assert.equal(stubLoader.chip.SPI_REG_BASE, ESP32C5_SPI_REG_BASE);
 
 const writes = [];
 await watchdogResetEsp32C5({
@@ -216,7 +248,7 @@ identity.set(new TextEncoder().encode("AirLink-Test_2026!\0"), 29);
 identityView.setUint32(96, crc32(identity.subarray(0, 96)), true);
 assert.ok(factoryIdentityPresent(initializedIdentityPartition), "valid factory identity is detected");
 
-const portable = await readFile(join(root, "www/AirLink-Flasher-v0.3.1-dev.html"), "utf8");
+const portable = await readFile(join(root, `www/AirLink-Flasher-${RELEASE.tag}.html`), "utf8");
 assert.match(portable, /<script type="module">/);
 assert.match(portable, /<style>/);
 assert.doesNotMatch(portable, /<script[^>]+src=/);
@@ -225,6 +257,8 @@ assert.doesNotMatch(portable, /\.\/assets\//);
 assert.doesNotMatch(portable, /["']\.\/firmware\//);
 assert.doesNotMatch(portable, /data:application\/octet-stream;base64/i);
 assert.doesNotMatch(portable, /[A-Za-z0-9+/]{200000}/);
+assert.match(portable, new RegExp(ESP32C5_ECO2_STUB_MARKER));
+assert.match(portable, /1610625024|0x60003000/i);
 
 const batch = await readFile(join(root, "start_flasher.bat"), "utf8");
 assert.doesNotMatch(batch, /python|http\.server|localhost/i);

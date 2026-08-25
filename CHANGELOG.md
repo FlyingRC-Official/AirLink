@@ -1,7 +1,49 @@
 # Changelog
 
+## 0.3.2-dev - 2026-08-25
+
+- Fixed ESP32-C5 ECO2 browser flashing by bundling Espressif's v2 C5 stub,
+  selecting the SPIMEM1 register base at `0x60003000`, retrying JEDEC reads and
+  refusing invalid IDs instead of silently treating them as 4 MB.
+- Fixed direct and Helper-proxied Wi-Fi OTA uploads to forward the hardware,
+  Flash, PSRAM and SHA-256 headers required by firmware; extended the local-file
+  CORS allowlist for the same verified metadata.
+- Kept transparent forwarding byte-for-byte while passively parsing valid
+  vehicle-side MAVLink heartbeats, so armed-flight-controller interlocks also
+  apply in transparent mode.
+- Added an exact-tag release quality gate: release artifacts and the GitHub
+  Prerelease cannot be built or published until every `firmware-ci` job for the
+  same tag commit succeeds.
+- Made `master` the explicit Release target and documented switching the GitHub
+  default branch from the obsolete V0.2.1 `main` baseline.
+- Added persistent crash diagnostics, safer degraded startup, monotonic bridge
+  queue statistics and repeatable two-module bridge acceptance automation.
+- Fixed a bridge-congestion task-watchdog reset by making router output queues
+  non-blocking and the watchdog-supervised FC activity read lock-free.
+- Moved 256-frame bridge/TCP queue storage to PSRAM so the air unit can retain
+  complete ArduPilot parameter bursts without exhausting contiguous internal
+  RAM; socket errno, listener, accept/disconnect and allocation counters are
+  now available through USB and Web diagnostics.
+- Batched TCP output up to one MSS and disabled STA modem sleep for the powered
+  real-time bridge, preventing a marginal link from stalling its TCP window
+  during telemetry and parameter bursts.
+- Replaced the C5/lwIP premature non-blocking-connect check with a bounded TCP
+  handshake and added reconnect backoff plus transient socket-error handling.
+- Replaced the C5 CPU-only application restart with a controlled ROM system
+  reset so native USB reliably disconnects and re-enumerates on Windows.
+- Hardened bridge automation so an interrupted temporary USB CLI session is
+  restored from persisted mode and reconnect checks require a real boot-count
+  increment instead of accepting buffered pre-reboot heartbeats.
+- Bench-verified 1,270/1,270 ArduPilot parameters with valid MAVLink CRCs, then
+  711,913 telemetry bytes and 298 heartbeats over five minutes at -75 dBm with
+  zero new queue/overflow drops; an air-unit restart recovered automatically.
+
 ## 0.3.1-dev - 2026-08-25
 
+- Added persistent boot-stage breadcrumbs, flash coredump visibility and
+  watchdog-to-coredump handling for diagnosing panics and stalled USB tasks.
+- Added secret-safe crash collection and repeatable two-unit Wi-Fi bridge
+  acceptance tools with machine-readable PASS/FAIL reports.
 - Added the Windows/macOS single-file configurator and loopback-only native Go
   helper for discovery, safe proxying, profiles, batch deployment and pairing.
 - Added atomic USB configuration transactions, capability/config validation,

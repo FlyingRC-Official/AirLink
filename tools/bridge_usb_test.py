@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Exercise the ground AirLink USB MAVLink side without flight-control commands."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import struct
 import time
 
-import serial
+try:
+    import serial
+except ModuleNotFoundError:  # Allows host-side parser tests without pyserial.
+    serial = None
 
 
 def x25_crc(data: bytes) -> int:
@@ -129,6 +134,8 @@ def open_serial_without_reset(port_name: str) -> serial.Serial:
     boot-mode requests.  Set the desired line state before opening so repeated
     bridge tests do not accidentally reboot the AirLink under test.
     """
+    if serial is None:
+        raise RuntimeError("pyserial is required for physical bridge tests")
     port = serial.Serial()
     port.port = port_name
     port.baudrate = 115200

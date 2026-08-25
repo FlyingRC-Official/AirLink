@@ -1,14 +1,14 @@
 {
   "name": "airlink-configurator",
-  "version": "0.3.1-dev",
+  "version": "0.3.2-dev",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build-single-file.mjs",
     "start": "node scripts/build-single-file.mjs",
     "test": "node scripts/build-single-file.mjs && node --test tests/*.test.mjs",
-    "helper:test": "go test ./helper/...",
-    "helper:vet": "go vet ./helper/..."
+    "helper:test": "go test -C helper ./...",
+    "helper:vet": "go vet -C helper ./..."
   },
   "engines": {
     "node": ">=18"

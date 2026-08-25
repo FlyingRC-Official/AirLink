@@ -19,3 +19,4 @@ tools/usb_flasher/*.zip
 tools/usb_flasher/AirLink-Flasher-*.html
 tools/usb_flasher/www/
 tools/configurator/*.exe
+diagnostic-reports/

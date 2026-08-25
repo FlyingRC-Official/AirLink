@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run secret-safe V0.3.1 USB CLI acceptance checks on a physical AirLink."""
+"""Run secret-safe V0.3.2 USB CLI acceptance checks on a physical AirLink."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import serial
 
 
 ESCAPE = b"+++AIRLINK-CLI\r\n"
-EXPECTED_VERSION = "0.3.1-dev"
+EXPECTED_VERSION = "0.3.2-dev"
 DIAGNOSTIC_TERMS = re.compile(
     r"rst:|reset|boot:|ESP_ERROR_CHECK|abort|guru|panic|assert|backtrace|"
     r"airlink|recovery|services ready|rollback|error|failed", re.IGNORECASE)
@@ -98,7 +98,39 @@ def check_atomic_abort(port: serial.Serial, generation: int) -> None:
         raise RuntimeError("aborted transaction changed the configuration generation")
 
 
+def confirm_ota_health(port_name: str, timeout: float = 60.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = "device did not re-enumerate"
+    while time.monotonic() < deadline:
+        try:
+            with open_serial(port_name) as health_port:
+                read_for(health_port, 1.0)
+                status_output, temporary = enter_cli(health_port)
+                while time.monotonic() < deadline:
+                    fields = parse_fields(status_output)
+                    version = fields.get("firmware", "")
+                    state = int(fields.get("ota_image_state", "-1"))
+                    if version != EXPECTED_VERSION:
+                        raise RuntimeError(f"OTA rebooted into unexpected firmware {version or 'unknown'}")
+                    if state == 2:
+                        if temporary:
+                            try:
+                                issue(health_port, "reboot", 0.2)
+                            except serial.SerialException:
+                                pass
+                        return
+                    if state in (3, 4):
+                        raise RuntimeError(f"OTA image was rejected or rolled back (state={state})")
+                    time.sleep(2.0)
+                    status_output = issue(health_port, "status", 0.7)
+        except (serial.SerialException, serial.SerialTimeoutException, OSError) as exc:
+            last_error = str(exc) or exc.__class__.__name__
+            time.sleep(1.0)
+    raise RuntimeError(f"OTA health confirmation timed out: {last_error}")
+
+
 def usb_ota(port: serial.Serial, image_path: Path) -> None:
+    port_name = str(port.port)
     image = image_path.read_bytes()
     digest = hashlib.sha256(image).hexdigest()
     response = issue(port, f"ota begin {len(image)} {digest}", 2.5)
@@ -114,6 +146,8 @@ def usb_ota(port: serial.Serial, image_path: Path) -> None:
         result = ""
     if "OK ota verified; rebooting" not in result:
         raise RuntimeError("USB OTA did not report verified completion")
+    port.close()
+    confirm_ota_health(port_name)
 
 
 def main() -> int:
@@ -159,7 +193,8 @@ def main() -> int:
             "firmware", "vehicle_queue_drops", "bridge_tx_queue_drops",
             "wifi_reconnects_total", "wifi_reconnect_streak", "free_heap",
             "reset_reason", "ota_in_progress", "ota_running_partition",
-            "ota_image_state",
+            "ota_image_state", "coredump_present", "coredump_size",
+            "previous_boot_stage", "boot_stage",
         }
         missing = sorted(required - status.keys())
         if missing:
@@ -186,6 +221,14 @@ def main() -> int:
             f"split_escape={'yes' if split_escape else 'not-required'} "
             f"atomic_abort=yes"
         )
+        # A prior interrupted test may already have left a MAVLink-configured
+        # device in temporary CLI, in which case enter_cli() cannot infer how
+        # the mode was entered.  Always restore the persisted MAVLink mode.
+        if config.get("usb_mode") == "mavlink":
+            try:
+                issue(port, "reboot", 0.2)
+            except (serial.SerialException, serial.SerialTimeoutException):
+                pass
     return 0
 
 

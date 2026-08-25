@@ -20,7 +20,9 @@
 #include "esp_check.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_system.h"
+#include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -63,7 +65,25 @@ static void usb_reset_protection(bool enabled)
     }
 }
 
-void airlink_usb_reset_guard_enable(void) { usb_reset_protection(true); }
+void airlink_usb_reset_guard_enable(void)
+{
+    usb_reset_protection(true);
+}
+
+void airlink_usb_system_restart(void)
+{
+    /* ESP-IDF's C5 esp_restart() deliberately resets only the CPU so the ROM
+     * can retain USB logging.  That also retains stale Serial/JTAG endpoint
+     * state on Windows.  Use the C5 ROM system reset here so the USB digital
+     * peripheral really resets and re-enumerates; all persistent state has
+     * already been committed before this function is called. */
+    airlink_wifi_prepare_restart();
+    vTaskDelay(pdMS_TO_TICKS(100));
+    (void)usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
+    esp_rom_delay_us(20000);
+    esp_rom_software_reset_system();
+    while (true) { }
+}
 
 static bool parse_sha256_text(const char *text, uint8_t digest[32])
 {
@@ -152,6 +172,10 @@ static void status_show(void)
              "minimum_free_heap=%" PRIu32 "\r\n"
              "boot_count=%" PRIu32 "\r\n"
              "reset_reason=%" PRIu32 "\r\n"
+             "coredump_present=%u\r\n"
+             "coredump_size=%" PRIu32 "\r\n"
+             "previous_boot_stage=%s\r\n"
+             "boot_stage=%s\r\n"
              "fc_seen=%u\r\n"
              "fc_armed=%u\r\n"
              "fc_bytes_in=%" PRIu64 "\r\n"
@@ -171,6 +195,17 @@ static void status_show(void)
              "bridge_role=%s\r\n"
              "bridge_connected=%u\r\n"
              "bridge_reconnects=%" PRIu32 "\r\n"
+             "bridge_last_errno=%" PRIu32 "\r\n"
+             "tcp_last_errno=%" PRIu32 "\r\n"
+             "bridge_connects_total=%" PRIu32 "\r\n"
+             "tcp_accepts_total=%" PRIu32 "\r\n"
+             "tcp_disconnects_total=%" PRIu32 "\r\n"
+             "tcp_queue_alloc_failures=%" PRIu32 "\r\n"
+             "tcp_queue_peak=%" PRIu32 "\r\n"
+             "tcp_queue_current=%" PRIu32 "\r\n"
+             "tcp_send_would_block=%" PRIu32 "\r\n"
+             "network_task_loops=%" PRIu32 "\r\n"
+             "tcp_listener_active=%u\r\n"
              "usb_frames_out=%" PRIu32 "\r\n"
              "usb_queue_drops=%" PRIu32 "\r\n"
              "bridge_tcp_queue_drops=%" PRIu32 "\r\n"
@@ -195,6 +230,8 @@ static void status_show(void)
              app->version, AIRLINK_HARDWARE_ID, config.serial_number,
              diag.uptime_seconds, diag.free_heap, diag.minimum_free_heap,
              diag.boot_count, diag.reset_reason,
+             diag.coredump_present, diag.coredump_size,
+             diag.previous_boot_stage, diag.boot_stage,
              airlink_router_fc_seen(), airlink_router_fc_armed(),
              fc.bytes_in, fc.bytes_out, fc.frames_in, fc.frames_out,
              fc.parse_errors, wifi.ap_started, wifi.sta_connected,
@@ -202,8 +239,15 @@ static void status_show(void)
              wifi.tcp_clients, wifi.reconnects, wifi.reconnects_total,
              wifi.reconnect_streak, bridge_role_name(config.bridge_role),
              wifi.bridge_connected, wifi.bridge_reconnects,
+             wifi.bridge_last_errno, wifi.tcp_last_errno,
+             wifi.bridge_connects_total, wifi.tcp_accepts_total,
+             wifi.tcp_disconnects_total, wifi.tcp_queue_alloc_failures,
+             wifi.tcp_queue_peak, wifi.tcp_queue_current,
+             wifi.tcp_send_would_block,
+             wifi.network_task_loops,
+             wifi.tcp_listener_active,
              usb.frames_out, usb.queue_drops, bridge_tcp.queue_drops,
-             fc.queue_drops, bridge_tcp.queue_drops,
+             fc.queue_drops, wifi.bridge_tx_queue_drops,
              uart.rx_overflow,
              uart.driver_restarts, uart.high_queue_drops,
              uart.normal_queue_drops, can.rx_frames, can.tx_frames,
@@ -606,9 +650,10 @@ static void handle_builtin(const char *line)
             airlink_usb_write_cli("ERR flight controller armed\r\n");
             return;
         }
+        (void)airlink_diag_mark_boot_stage("restarting");
         airlink_usb_write_cli("OK rebooting\r\n");
         vTaskDelay(pdMS_TO_TICKS(50));
-        esp_restart();
+        airlink_usb_system_restart();
     } else if (strcmp(line, "usb log") == 0 || strcmp(line, "usb mavlink") == 0) {
         if (airlink_router_fc_armed()) {
             airlink_usb_write_cli("ERR flight controller armed\r\n");
@@ -617,9 +662,10 @@ static void handle_builtin(const char *line)
         airlink_config_t config; airlink_config_get(&config);
         config.usb_mode = strcmp(line, "usb mavlink") == 0 ? AIRLINK_USB_MAVLINK : AIRLINK_USB_LOG_CLI;
         if (airlink_config_save(&config) == ESP_OK) {
+            (void)airlink_diag_mark_boot_stage("restarting");
             airlink_usb_write_cli("OK mode saved; rebooting\r\n");
             vTaskDelay(pdMS_TO_TICKS(50));
-            esp_restart();
+            airlink_usb_system_restart();
         } else {
             airlink_usb_write_cli("ERR could not save mode\r\n");
         }
@@ -633,6 +679,7 @@ static void handle_builtin(const char *line)
 static void usb_task(void *argument)
 {
     (void)argument;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     uint8_t rx[USB_RX_CHUNK];
     char line[192];
     size_t line_length = 0;
@@ -640,6 +687,7 @@ static void usb_task(void *argument)
     airlink_escape_matcher_t escape = {0};
     if (s_mode == AIRLINK_USB_LOG_CLI) airlink_usb_write_cli("\r\nAirLink LOG_CLI ready. Type help.\r\n> ");
     while (true) {
+        ESP_ERROR_CHECK(esp_task_wdt_reset());
         if (s_usb_download_deadline_us > 0 &&
             esp_timer_get_time() >= s_usb_download_deadline_us) {
             usb_reset_protection(true);
@@ -669,10 +717,11 @@ static void usb_task(void *argument)
                     airlink_usb_write_cli("\r\nERR ota verification failed\r\n> ");
                     continue;
                 }
+                (void)airlink_diag_mark_boot_stage("ota-restarting");
                 airlink_usb_write_cli("\r\nOK ota verified; rebooting\r\n");
                 usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
                 vTaskDelay(pdMS_TO_TICKS(100));
-                esp_restart();
+                airlink_usb_system_restart();
             }
             continue;
         }

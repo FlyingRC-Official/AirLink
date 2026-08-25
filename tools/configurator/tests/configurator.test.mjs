@@ -40,7 +40,7 @@ test("renders a secret-safe change preview with connection risks", () => {
 });
 
 test("profiles omit secrets and reject unknown schemas", () => {
-  const profile = createProfile({ ap_ssid: "AIR", ap_password: "secret-secret", admin_password: "admin-secret", generation: 3, udp_port: 14550 }, { firmware: "v0.3.1-dev" });
+  const profile = createProfile({ ap_ssid: "AIR", ap_password: "secret-secret", admin_password: "admin-secret", generation: 3, udp_port: 14550 }, { firmware: "v0.3.2-dev" });
   assert.equal(profile.schema, "airlink-config-profile/v1");
   assert.equal(profile.config.ap_password, undefined);
   assert.equal(profile.config.admin_password, undefined);
@@ -98,7 +98,7 @@ test("builds a portable single-file configurator", async () => {
   assert.match(bundle, /airlink-config-profile\/v1/);
   assert.match(bundle, /helper\/v1\/devices/);
   assert.match(bundle, /wifi_scan|wifiScan/);
-  assert.match(bundle, /V0\.3\.1-DEV/);
+  assert.match(bundle, /V0\.3\.2-DEV/);
   assert.match(bundle, /Update from GitHub/);
   assert.match(bundle, /Export redacted report/);
   assert.match(bundle, /Confirm changes before saving/);
@@ -117,6 +117,20 @@ test("supports verified firmware updates over USB", async () => {
   assert.match(main, /async function otaFromGithub\(\) \{\s+if \(!transport \|\| busy\) return;/);
   assert.match(firmware, /airlink_ota_stream_begin/);
   assert.match(firmware, /airlink_ota_stream_finish/);
+});
+
+test("Wi-Fi and helper OTA forward firmware compatibility headers", async () => {
+  const transports = await readFile(join(fileURLToPath(root), "public/js/transports.js"), "utf8");
+  const main = await readFile(join(fileURLToPath(root), "public/js/main.js"), "utf8");
+  for (const header of ["X-AirLink-Hardware", "X-AirLink-Flash-Bytes", "X-AirLink-PSRAM-Bytes", "X-AirLink-SHA256"]) {
+    assert.match(transports, new RegExp(header));
+  }
+  assert.match(transports, /class HelperTransport[\s\S]+async ota\(/);
+  assert.match(transports, /helper\/v1\/ota/);
+  assert.match(main, /transport\.ota\(firmware,[\s\S]+metadata\)/);
+  assert.match(main, /hardwareId: manifest\.hardware_id/);
+  assert.match(main, /status\.ota\?\.image_state/);
+  assert.match(main, /45 秒内未完成 OTA 健康确认/);
 });
 
 test("helper is loopback-only, session protected and proxy allowlisted", async () => {
@@ -142,7 +156,11 @@ test("launchers open the HTML without Node.js", async () => {
 test("firmware permits authenticated API access from the local HTML origin", async () => {
   const firmware = await readFile(join(fileURLToPath(root), "..", "..", "components", "airlink_web", "airlink_web.c"), "utf8");
   assert.match(firmware, /Access-Control-Allow-Origin", "null"/);
-  assert.match(firmware, /Access-Control-Allow-Headers", "Authorization, Content-Type"/);
+  assert.match(firmware, /Access-Control-Allow-Headers"/);
+  assert.match(firmware, /X-AirLink-Hardware/);
+  assert.match(firmware, /X-AirLink-Flash-Bytes/);
+  assert.match(firmware, /X-AirLink-PSRAM-Bytes/);
+  assert.match(firmware, /X-AirLink-SHA256/);
   assert.match(firmware, /Access-Control-Allow-Private-Network", "true"/);
   assert.match(firmware, /HTTP_OPTIONS, cors_options_handler/);
 });

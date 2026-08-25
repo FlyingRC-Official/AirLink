@@ -8,6 +8,7 @@ import {
   RELEASE, loadReleaseFirmware, releasePageUrl,
 } from "./release-firmware.js";
 import { watchdogResetEsp32C5 } from "./esp32c5-reset.js";
+import { detectEsp32C5FlashSize, installEsp32C5Eco2Workarounds } from "./esp32c5-eco2.js";
 import "./styles.css";
 
 const state = {
@@ -157,7 +158,7 @@ app.innerHTML = `
           </div>
 
           <button class="button flash-button" id="flashButton" type="button" disabled>
-            安全烧录 AirLink V0.3.1-DEV
+            安全烧录 AirLink V0.3.2-DEV
           </button>
           <p class="microcopy centered">预计约 1–3 分钟。写入完成前不要关闭网页、拔出 USB 或按 RESET。</p>
 
@@ -442,11 +443,12 @@ async function connectDevice() {
     state.transport = transport;
     state.loader = loader;
 
+    installEsp32C5Eco2Workarounds(loader);
     const chipName = await loader.main("default_reset");
     if (!chipName.toUpperCase().includes("ESP32-C5")) {
       throw new Error(`检测到 ${chipName}，本工具只允许烧录 ESP32-C5`);
     }
-    const flashSize = await loader.detectFlashSize();
+    const flashSize = await detectEsp32C5FlashSize(loader);
     if (flashSize !== "8MB") throw new Error(`检测到 ${flashSize} Flash，本固件只允许 8MB 设备`);
     const mac = await loader.chip.readMac(loader);
     const identityProbe = await loader.readFlash(PROVISION.identityAddress, PROVISION.identitySize);

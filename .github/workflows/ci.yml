@@ -12,7 +12,9 @@ jobs:
           cache-dependency-path: tools/usb_flasher/package-lock.json
       - run: tests/run_host_tests.sh
       - run: tests/check_web.sh
-      - run: python3 -m py_compile tools/airlink_factory.py tools/airlink_cli_acceptance.py tools/create_release.py
+      - run: python3 -m py_compile tools/airlink_factory.py tools/airlink_cli_acceptance.py tools/wifi_bridge_acceptance.py tools/capture_dual_usb_logs.py tools/collect_crash_diagnostics.py tools/create_release.py
+      - run: python3 tools/wifi_bridge_acceptance.py --self-test
+      - run: python3 tools/collect_crash_diagnostics.py --self-test
       - name: Build and test cross-platform USB flasher
         working-directory: tools/usb_flasher
         run: |
@@ -107,14 +109,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item www/AirLink-Flasher-v0.3.1-dev.html AirLink-Flasher-v0.3.1-dev.html
+          Copy-Item www/AirLink-Flasher-v0.3.2-dev.html AirLink-Flasher-v0.3.2-dev.html
           $env:AIRLINK_FLASHER_DRY_RUN = "1"
           cmd /c start_flasher.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate macOS launcher
         if: runner.os == 'macOS'
         run: |
-          cp www/AirLink-Flasher-v0.3.1-dev.html AirLink-Flasher-v0.3.1-dev.html
+          cp www/AirLink-Flasher-v0.3.2-dev.html AirLink-Flasher-v0.3.2-dev.html
           AIRLINK_FLASHER_DRY_RUN=1 ./start_flasher.command
   esp-idf:
     runs-on: ubuntu-latest

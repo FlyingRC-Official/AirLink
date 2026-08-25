@@ -78,6 +78,8 @@ required = [
     'wifi_reconnects_total=',
     'firmware=%s',
     'free_heap=',
+    'coredump_present=',
+    'previous_boot_stage=',
     'can_rx_frames=',
     'ota_in_progress=',
 ]
@@ -116,11 +118,38 @@ assert 'type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE' in rou
 assert '.type = AIRLINK_ENDPOINT_BRIDGE' in wifi
 assert 'bridge_connect()' in wifi
 assert 'replacing stale TCP client from reconnecting station' in wifi
-assert '#define NET_PACKET_QUEUE 64' in wifi
+assert '#define NET_PACKET_QUEUE 256' in wifi
+assert 'MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT' in wifi
+assert 'xQueueCreateStatic(NET_PACKET_QUEUE' in wifi
+assert 'tcp_queue_alloc_failures' in wifi
 assert '#define NETWORK_TASK_PRIORITY 19' in wifi
-assert '#define TCP_TX_BURST 8U' in wifi
+assert '#define TCP_TX_BATCH_PACKETS 32U' in wifi
+assert '#define TCP_TX_BATCH_BYTES 1440U' in wifi
+assert 'xQueuePeek(client->tx_queue' in wifi
+assert 'esp_wifi_set_ps(WIFI_PS_NONE)' in wifi
+assert 'xQueueSend(s_bridge_tx_queue, &packet, 0)' in wifi
+assert 'xQueueSend(client->tx_queue, &packet, 0)' in wifi
+assert 'void airlink_wifi_prepare_restart(void)' in wifi
+assert 'shutdown(s_bridge_socket, SHUT_RDWR)' in wifi
+assert 's_status.bridge_tx_queue_drops = increment_saturated' in wifi
+assert 'uxQueueMessagesWaiting' in wifi
 assert 'service_tcp_tx(client)' in wifi
 assert 'airlink_stream_chunk_size(length - offset' in router
+transparent = router[router.index('if (s_mode == AIRLINK_ROUTE_TRANSPARENT)'):]
+transparent = transparent[:transparent.index('return ESP_OK;')]
+assert 'observe_vehicle_safety(source, data, length);' in transparent
+assert transparent.index('observe_vehicle_safety') < transparent.index('route(source')
+observer = router[router.index('static void observe_vehicle_safety'):router.index('static void route(')]
+assert 'airlink_mavlink_parse_byte' in observer
+assert 'observe_vehicle_frame' in observer
+fc_seen = router[router.index('bool airlink_router_fc_seen(void)'):router.index('bool airlink_router_fc_armed(void)')]
+assert 'atomic_load(&s_fc_last_seen_us)' in fc_seen
+assert 'portMAX_DELAY' not in fc_seen
+assert 'esp_rom_software_reset_system();' in usb
+assert 'airlink_usb_system_restart();' in usb
+assert 'airlink_wifi_prepare_restart();' in usb
+acceptance = Path(sys.argv[4]).parents[1] / 'tools' / 'airlink_cli_acceptance.py'
+assert 'config.get("usb_mode") == "mavlink"' in acceptance.read_text()
 assert '+++AIRLINK-CLI\\r\\n' in usb
 assert '#define USB_QUEUE_DEPTH 64' in usb
 assert '#define USB_TASK_PRIORITY 19' in usb
@@ -133,4 +162,5 @@ assert 'hardware_ok && !recovery && !ground_bridge' in main
 assert 'airlink_usb_reset_guard_enable();' in main
 assert 'ESP_ERROR_CHECK(airlink_usb_start' not in main
 assert 'airlink_ota_health_heartbeat(healthy);' in main
+assert 'airlink_diag_mark_boot_stage("healthy")' in main
 PY

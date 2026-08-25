@@ -27,14 +27,16 @@ const (
 	discoveryPort    = 49374
 	discoveryRequest = "AIRLINK_DISCOVER_V1\n"
 	maxProxyBody     = 2 << 20
+	maxOtaBody       = 4 << 20
 )
 
 //go:embed static/index.html
 var site embed.FS
 
 type helperServer struct {
-	session string
-	client  *http.Client
+	session   string
+	client    *http.Client
+	otaClient *http.Client
 }
 
 type proxyRequest struct {
@@ -114,7 +116,7 @@ func (server *helperServer) health(response http.ResponseWriter, request *http.R
 		writeJSON(response, http.StatusUnauthorized, map[string]string{"error": "invalid_helper_session"})
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "version": "0.3.1-dev", "discovery_port": discoveryPort})
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "version": "0.3.2-dev", "discovery_port": discoveryPort})
 }
 
 func discover(ctx context.Context, timeout time.Duration) ([]discoveredDevice, error) {
@@ -241,11 +243,78 @@ func (server *helperServer) proxy(response http.ResponseWriter, request *http.Re
 	_, _ = response.Write(payload)
 }
 
+func (server *helperServer) ota(response http.ResponseWriter, request *http.Request) {
+	if !server.authorized(request) {
+		writeJSON(response, http.StatusUnauthorized, map[string]string{"error": "invalid_helper_session"})
+		return
+	}
+	if request.Method != http.MethodPost {
+		writeJSON(response, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	if request.ContentLength <= 0 || request.ContentLength > maxOtaBody {
+		writeJSON(response, http.StatusRequestEntityTooLarge, map[string]string{"error": "invalid_ota_size"})
+		return
+	}
+	target, err := isPrivateTarget(request.Header.Get("X-AirLink-Target"))
+	if err != nil {
+		writeJSON(response, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
+	username, password, ok := request.BasicAuth()
+	if !ok {
+		writeJSON(response, http.StatusUnauthorized, map[string]string{"error": "missing_device_authorization"})
+		return
+	}
+	requiredHeaders := []string{
+		"X-AirLink-Hardware", "X-AirLink-Flash-Bytes", "X-AirLink-PSRAM-Bytes", "X-AirLink-SHA256",
+	}
+	for _, name := range requiredHeaders {
+		if request.Header.Get(name) == "" {
+			writeJSON(response, http.StatusBadRequest, map[string]string{"error": "missing_" + strings.ToLower(name)})
+			return
+		}
+	}
+	target.Path = "/api/v1/ota"
+	request.Body = http.MaxBytesReader(response, request.Body, maxOtaBody)
+	upstream, err := http.NewRequestWithContext(request.Context(), http.MethodPost, target.String(), request.Body)
+	if err != nil {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid_upstream_request"})
+		return
+	}
+	upstream.ContentLength = request.ContentLength
+	upstream.Header.Set("Content-Type", "application/octet-stream")
+	for _, name := range requiredHeaders {
+		upstream.Header.Set(name, request.Header.Get(name))
+	}
+	upstream.SetBasicAuth(username, password)
+	client := server.otaClient
+	if client == nil {
+		client = server.client
+	}
+	result, err := client.Do(upstream)
+	if err != nil {
+		writeJSON(response, http.StatusBadGateway, map[string]string{"error": "device_unreachable"})
+		return
+	}
+	defer result.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(result.Body, maxProxyBody+1))
+	if err != nil || len(payload) > maxProxyBody {
+		writeJSON(response, http.StatusBadGateway, map[string]string{"error": "invalid_device_response"})
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(result.StatusCode)
+	_, _ = response.Write(payload)
+}
+
 func (server *helperServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/helper/v1/health", server.health)
 	mux.HandleFunc("/helper/v1/devices", server.devices)
 	mux.HandleFunc("/helper/v1/proxy", server.proxy)
+	mux.HandleFunc("/helper/v1/ota", server.ota)
 	mux.HandleFunc("/", func(response http.ResponseWriter, request *http.Request) {
 		if !server.authorized(request) {
 			http.Error(response, "invalid helper session", http.StatusUnauthorized)
@@ -301,11 +370,14 @@ func main() {
 		log.Fatal(err)
 	}
 	server := &helperServer{session: session, client: &http.Client{
-		Timeout: 12 * time.Second,
+		Timeout:       12 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}, otaClient: &http.Client{
+		Timeout:       90 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 	launchURL := fmt.Sprintf("http://%s/?session=%s", listener.Addr().String(), session)
-	fmt.Printf("AirLink Configurator V0.3.1-DEV: %s\n", launchURL)
+	fmt.Printf("AirLink Configurator V0.3.2-DEV: %s\n", launchURL)
 	if !*noBrowser {
 		_ = openBrowser(launchURL)
 	}
