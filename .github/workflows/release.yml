@@ -29,6 +29,7 @@ jobs:
           cp "$locked/bootloader.bin" build-locked/bootloader/bootloader.bin
           cp "$locked/partition-table.bin" build-locked/partition_table/partition-table.bin
           cp "$locked/ota_data_initial.bin" build-locked/ota_data_initial.bin
+          cp build-release/flash_args build-locked/flash_args
           package=$(tools/create_release.sh build-locked 0.3.1-dev)
           cp "$locked/manifest.json" "$package/manifest.json"
           python3 - "$package" <<'PY'
