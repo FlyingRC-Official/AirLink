@@ -19,7 +19,27 @@ jobs:
           source /opt/esp/idf/export.sh
           idf.py set-target esp32c5
           idf.py -B build-release -D SDKCONFIG=build-release/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.release" build
-          package=$(tools/create_release.sh build-release 0.3.1-dev)
+          # The browser flasher downloads the immutable files from this tag and
+          # compares them with GitHub Release digests. Compile above as a source
+          # verification, but package the exact bench-qualified bytes committed
+          # before tagging so build timestamps cannot change their SHA-256.
+          locked=tools/usb_flasher/public/firmware/v0.3.1-dev
+          mkdir -p build-locked/bootloader build-locked/partition_table
+          cp "$locked/airlink.bin" build-locked/airlink.bin
+          cp "$locked/bootloader.bin" build-locked/bootloader/bootloader.bin
+          cp "$locked/partition-table.bin" build-locked/partition_table/partition-table.bin
+          cp "$locked/ota_data_initial.bin" build-locked/ota_data_initial.bin
+          package=$(tools/create_release.sh build-locked 0.3.1-dev)
+          cp "$locked/manifest.json" "$package/manifest.json"
+          python3 - "$package" <<'PY'
+          import hashlib, json, pathlib, sys
+          package = pathlib.Path(sys.argv[1])
+          manifest = json.loads((package / "manifest.json").read_text())
+          for name, expected in manifest["images"].items():
+              actual = hashlib.sha256((package / name).read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"locked release hash mismatch: {name}: {actual} != {expected}")
+          PY
           cd "$package"
           zip -qr "../AirLink-Firmware-v0.3.1-dev.zip" .
       - uses: actions/upload-artifact@v4
@@ -78,6 +98,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.24.x'
+          cache-dependency-path: tools/configurator/helper/go.mod
       - name: Build embedded page
         working-directory: tools/configurator
         run: npm run build
