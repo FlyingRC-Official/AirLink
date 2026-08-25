@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "airlink_uart.h"
 
+#include <inttypes.h>
 #include <string.h>
 #include "airlink_board.h"
 #include "airlink_core.h"
@@ -32,6 +33,7 @@ static QueueHandle_t s_high_queue;
 static QueueHandle_t s_normal_queue;
 static airlink_uart_health_t s_health;
 static TaskHandle_t s_rx_task;
+static TaskHandle_t s_tx_task;
 
 static inline void increment_saturated_u32(uint32_t *value)
 {
@@ -108,7 +110,9 @@ static void uart_rx_task(void *argument)
             increment_saturated_u32(&s_health.rx_overflow);
             uart_flush_input(FC_UART);
             xQueueReset(s_events);
-            ESP_LOGW(TAG, "RX overflow recovered");
+            if (s_health.rx_overflow == 1U || (s_health.rx_overflow % 64U) == 0U) {
+                ESP_LOGW(TAG, "RX overflow recovered; total=%" PRIu32, s_health.rx_overflow);
+            }
         } else if (event.type == UART_BREAK || event.type == UART_FRAME_ERR || event.type == UART_PARITY_ERR) {
             ESP_LOGW(TAG, "UART error event=%d", event.type);
         }
@@ -141,7 +145,7 @@ esp_err_t airlink_uart_start(uint32_t baud)
     };
     ESP_RETURN_ON_ERROR(airlink_router_register(&endpoint), TAG, "register UART endpoint");
     if (xTaskCreate(uart_rx_task, "fc_uart_rx", 4096, NULL, 18, &s_rx_task) != pdPASS ||
-        xTaskCreate(uart_tx_task, "fc_uart_tx", 4096, NULL, 19, NULL) != pdPASS) return ESP_ERR_NO_MEM;
+        xTaskCreate(uart_tx_task, "fc_uart_tx", 4096, NULL, 19, &s_tx_task) != pdPASS) return ESP_ERR_NO_MEM;
     return ESP_OK;
 }
 
@@ -149,6 +153,8 @@ esp_err_t airlink_uart_set_baud(uint32_t baud)
 {
     return uart_set_baudrate(FC_UART, baud);
 }
+
+bool airlink_uart_ready(void) { return s_rx_task != NULL && s_tx_task != NULL; }
 
 void airlink_uart_get_health(airlink_uart_health_t *health)
 {

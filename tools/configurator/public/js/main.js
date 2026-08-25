@@ -112,8 +112,8 @@ function setConnected(connected) {
   ui.saveDetail.textContent = connected ? "修改后请保存，重启后生效" : "密码不会写入浏览器存储";
   for (const button of [ui.refreshButton, ui.saveButton, ui.saveRebootButton, ui.factoryResetButton, ui.exportProfileButton,
     ui.diagnosticsButton, ui.linkTestButton, ui.pairAirButton, ui.pairGroundButton, ui.verifyPairButton]) button.disabled = !connected;
-  ui.otaButton.disabled = !connected || transport?.type === "usb";
-  ui.otaGithubButton.disabled = !connected || transport?.type === "usb";
+  ui.otaButton.disabled = !connected;
+  ui.otaGithubButton.disabled = !connected;
   ui.exportDiagnosticsButton.disabled = !latestDiagnostics;
   if (!connected) {
     ui.statusGrid.hidden = true; ui.statusEmpty.hidden = false; ui.unsavedBadge.hidden = true;
@@ -417,7 +417,7 @@ async function performOta(manifest, firmware) {
 }
 
 async function otaUpdate() {
-  if (!transport || transport.type === "usb" || busy) return;
+  if (!transport || busy) return;
   const manifestFile = ui.manifestFile.files[0]; const firmwareFile = ui.firmwareFile.files[0];
   if (!manifestFile || !firmwareFile) return toast("请选择 manifest.json 和 airlink.bin", true);
   setBusy(true, "正在校验固件…");
@@ -427,7 +427,7 @@ async function otaUpdate() {
 }
 
 async function otaFromGithub() {
-  if (!transport || transport.type === "usb" || busy) return;
+  if (!transport || busy) return;
   setBusy(true, "正在读取 GitHub Prerelease…");
   try {
     const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.3.1-dev";

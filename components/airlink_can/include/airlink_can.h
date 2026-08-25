@@ -21,5 +21,6 @@ esp_err_t airlink_can_start(uint32_t bitrate, bool factory_mode);
 esp_err_t airlink_can_factory_transmit(uint32_t id, bool extended,
                                        const uint8_t *data, size_t length);
 esp_err_t airlink_can_factory_set_bitrate(uint32_t bitrate);
+bool airlink_can_ready(void);
 void airlink_can_get_status(airlink_can_status_t *status);
 size_t airlink_can_json(char *output, size_t capacity);

@@ -10,7 +10,9 @@ requires every image to match both the release digest and firmware manifest.
 1. Extract the complete ZIP.
 2. Double-click `start_flasher.bat`. It opens Microsoft Edge first, then Google
    Chrome if Edge is unavailable.
-3. Disconnect every non-USB 5 V source. Hold BOOT, press RESET, release BOOT.
+3. Disconnect every non-USB 5 V source. If AirLink is running, select its USB
+   port directly; the page requests a bounded downloader window. If it cannot
+   connect, hold BOOT, press RESET, then release BOOT and select the port again.
 4. Generate or enter the initial password, then copy or download the credential
    record before flashing.
 5. Follow the remaining instructions shown in the page.
@@ -21,7 +23,9 @@ requires every image to match both the release digest and firmware manifest.
 2. Double-click `start_flasher.command`. If macOS blocks the launcher, right-click
    `AirLink-Flasher-v0.3.1-dev.html`, choose **Open With**, then select Google
    Chrome or Microsoft Edge.
-3. Disconnect every non-USB 5 V source. Hold BOOT, press RESET, release BOOT.
+3. Disconnect every non-USB 5 V source. If AirLink is running, select its USB
+   port directly; the page requests a bounded downloader window. If it cannot
+   connect, hold BOOT, press RESET, then release BOOT and select the port again.
 4. Save the generated or entered initial credentials before flashing.
 
 Safari is not supported. The local HTML requires internet access to GitHub for
@@ -56,4 +60,7 @@ release tag can provide CORS-readable bytes; they are not embedded in the HTML.
 - Passwords are never uploaded or stored in browser local storage. The operator
   must explicitly copy or download the credential record before flashing.
 - Per-image MD5 verification after writing.
+- ESP32-C5 LP-WDT reset followed by application USB re-enumeration and exact
+  firmware-version verification; a successful flash write alone is not shown
+  as a successful boot.
 - Explicit physical-safety confirmation before the flash button is enabled.

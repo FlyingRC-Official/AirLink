@@ -107,6 +107,18 @@ test("builds a portable single-file configurator", async () => {
   assert.doesNotThrow(() => new Function(script));
 });
 
+test("supports verified firmware updates over USB", async () => {
+  const transports = await readFile(join(fileURLToPath(root), "public/js/transports.js"), "utf8");
+  const main = await readFile(join(fileURLToPath(root), "public/js/main.js"), "utf8");
+  const firmware = await readFile(join(fileURLToPath(root), "..", "..", "components", "airlink_usb", "airlink_usb.c"), "utf8");
+  assert.match(transports, /ota begin \$\{bytes\.length\} \$\{digest\}/);
+  assert.match(transports, /OK ota verified; rebooting/);
+  assert.match(main, /async function otaUpdate\(\) \{\s+if \(!transport \|\| busy\) return;/);
+  assert.match(main, /async function otaFromGithub\(\) \{\s+if \(!transport \|\| busy\) return;/);
+  assert.match(firmware, /airlink_ota_stream_begin/);
+  assert.match(firmware, /airlink_ota_stream_finish/);
+});
+
 test("helper is loopback-only, session protected and proxy allowlisted", async () => {
   const source = await readFile(join(fileURLToPath(root), "helper/main.go"), "utf8");
   assert.match(source, /127\.0\.0\.1:0/);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -14,5 +15,6 @@ typedef struct {
 
 esp_err_t airlink_uart_start(uint32_t baud);
 esp_err_t airlink_uart_set_baud(uint32_t baud);
+bool airlink_uart_ready(void);
 void airlink_uart_get_health(airlink_uart_health_t *health);
 esp_err_t airlink_uart_factory_loopback(size_t length, uint32_t *errors);

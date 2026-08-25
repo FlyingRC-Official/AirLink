@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1-dev - 2026-08-24
+## 0.3.1-dev - 2026-08-25
 
 - Added the Windows/macOS single-file configurator and loopback-only native Go
   helper for discovery, safe proxying, profiles, batch deployment and pairing.
@@ -15,6 +15,18 @@
 - Replaced the USB CLI escape check with a timeout-aware streaming matcher that
   handles every split point, merged reads and overlapping plus prefixes.
 - Added stable ground/air queue-drop fields and monotonic Wi-Fi reconnect totals.
+- Fixed USB startup reset loops by increasing the USB task stack, serializing
+  log transmission through its queue and degrading non-core service failures
+  into reported health state instead of unconditional panic/reboot.
+- Added a disarmed-only, 15-second `usb download` window so esptool and the Web
+  flasher can enter the ESP32-C5 ROM downloader without permanently disabling
+  USB reset recovery.
+- Made the Web flasher issue an ESP32-C5 watchdog reset and verify the running
+  application/version after USB re-enumeration before reporting success.
+- Hardened OTA confirmation by checking return values and gating image validity
+  on the real USB, Wi-Fi, Web, UART and CAN service state.
+- Bench-verified the final image on two ESP32-C5 modules through USB CLI,
+  esptool, USB OTA, reboot/reconnect and image-valid confirmation.
 - This development prerelease is bench-oriented. Flight tests, a 24-hour soak
   and validation on physical Mac hardware remain outside its release gate.
 

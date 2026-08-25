@@ -183,6 +183,8 @@ esp_err_t airlink_can_start(uint32_t bitrate, bool factory_mode)
     return xTaskCreate(can_task, "can_diag", 4096, NULL, 10, &s_can_task) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+bool airlink_can_ready(void) { return s_node != NULL && s_can_task != NULL; }
+
 esp_err_t airlink_can_factory_set_bitrate(uint32_t bitrate)
 {
     if (!s_factory_mode) return ESP_ERR_NOT_ALLOWED;

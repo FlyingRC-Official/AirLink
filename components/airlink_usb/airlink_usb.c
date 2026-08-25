@@ -30,12 +30,14 @@
 
 #define USB_QUEUE_DEPTH 64
 #define USB_TASK_PRIORITY 19
+#define USB_TASK_STACK_SIZE 8192
 #define USB_CLI_ESCAPE "+++AIRLINK-CLI\r\n"
 #define USB_RX_CHUNK 256U
 typedef struct { uint16_t length; uint8_t data[AIRLINK_MAX_FRAME_SIZE]; } usb_packet_t;
 
 static airlink_usb_mode_t s_mode;
 static QueueHandle_t s_tx_queue;
+static TaskHandle_t s_usb_task;
 static airlink_usb_cli_handler_t s_cli_handler;
 static vprintf_like_t s_console_vprintf;
 static bool s_config_transaction_active;
@@ -44,6 +46,38 @@ static int64_t s_config_transaction_deadline_us;
 
 #define CONFIG_TRANSACTION_TIMEOUT_US INT64_C(30000000)
 #define USB_ESCAPE_TIMEOUT_US INT64_C(250000)
+#define USB_OTA_TIMEOUT_US INT64_C(30000000)
+#define USB_DOWNLOAD_WINDOW_US INT64_C(15000000)
+
+static int64_t s_usb_ota_deadline_us;
+static int64_t s_usb_download_deadline_us;
+
+static void usb_reset_protection(bool enabled)
+{
+    if (enabled) {
+        REG_SET_BIT(USB_SERIAL_JTAG_CHIP_RST_REG,
+                    USB_SERIAL_JTAG_USB_UART_CHIP_RST_DIS);
+    } else {
+        REG_CLR_BIT(USB_SERIAL_JTAG_CHIP_RST_REG,
+                    USB_SERIAL_JTAG_USB_UART_CHIP_RST_DIS);
+    }
+}
+
+void airlink_usb_reset_guard_enable(void) { usb_reset_protection(true); }
+
+static bool parse_sha256_text(const char *text, uint8_t digest[32])
+{
+    if (text == NULL || strlen(text) != 64U) return false;
+    for (size_t i = 0; i < 32U; ++i) {
+        char pair[3] = {text[i * 2U], text[i * 2U + 1U], '\0'};
+        char *end = NULL;
+        errno = 0;
+        const unsigned long value = strtoul(pair, &end, 16);
+        if (errno != 0 || end == NULL || *end != '\0') return false;
+        digest[i] = (uint8_t)value;
+    }
+    return true;
+}
 
 static const char *route_mode_name(airlink_route_mode_t mode)
 {
@@ -155,7 +189,9 @@ static void status_show(void)
              "can_dronecan_nodes=%u\r\n"
              "udp_listener_port=%u\r\n"
              "tcp_listener_port=%u\r\n"
-             "ota_in_progress=%u\r\n",
+             "ota_in_progress=%u\r\n"
+             "ota_running_partition=%s\r\n"
+             "ota_image_state=%" PRId32 "\r\n",
              app->version, AIRLINK_HARDWARE_ID, config.serial_number,
              diag.uptime_seconds, diag.free_heap, diag.minimum_free_heap,
              diag.boot_count, diag.reset_reason,
@@ -173,7 +209,8 @@ static void status_show(void)
              uart.normal_queue_drops, can.rx_frames, can.tx_frames,
              can.bus_errors, can.dronecan_errors, can.arbitration_lost,
              can.bus_off_count, can.dronecan_nodes, config.udp_port,
-             config.tcp_port, airlink_ota_in_progress());
+             config.tcp_port, airlink_ota_in_progress(),
+             airlink_ota_running_partition(), airlink_ota_image_state());
     airlink_usb_write_cli(output);
 }
 
@@ -465,10 +502,14 @@ static int usb_log_tee(const char *format, va_list args)
     va_list copy;
     va_copy(copy, args);
     const int result = s_console_vprintf != NULL ? s_console_vprintf(format, args) : vprintf(format, args);
-    if (s_mode == AIRLINK_USB_LOG_CLI && usb_serial_jtag_is_driver_installed()) {
-        char line[256];
-        const int length = vsnprintf(line, sizeof(line), format, copy);
-        if (length > 0) usb_serial_jtag_write_bytes(line, (size_t)(length < (int)sizeof(line) ? length : (int)sizeof(line) - 1), 0);
+    if (s_mode == AIRLINK_USB_LOG_CLI && s_tx_queue != NULL && !xPortInIsrContext()) {
+        usb_packet_t packet = {0};
+        const int length = vsnprintf((char *)packet.data, sizeof(packet.data), format, copy);
+        if (length > 0) {
+            packet.length = (uint16_t)(length < (int)sizeof(packet.data) ?
+                                       length : (int)sizeof(packet.data) - 1);
+            xQueueSend(s_tx_queue, &packet, 0);
+        }
     }
     va_end(copy);
     return result;
@@ -491,6 +532,7 @@ static bool escape_process(airlink_escape_matcher_t *matcher, const uint8_t *inp
         input, length, (uint64_t)esp_timer_get_time(), escape_emit, NULL, cli_offset);
     if (result != AIRLINK_ESCAPE_MATCHED) return false;
     airlink_router_unregister(AIRLINK_ENDPOINT_ID_USB);
+    xQueueReset(s_tx_queue);
     s_mode = AIRLINK_USB_LOG_CLI;
     s_console_vprintf = esp_log_set_vprintf(usb_log_tee);
     airlink_usb_write_cli("\r\nOK temporary USB CLI; reboot restores configured mode.\r\n> ");
@@ -507,9 +549,30 @@ esp_err_t airlink_usb_write_cli(const char *text)
 static void handle_builtin(const char *line)
 {
     if (strcmp(line, "help") == 0) {
-        airlink_usb_write_cli("commands: help, status, config ..., wifi scan, reboot, usb log, usb mavlink, factory ...\r\n");
+        airlink_usb_write_cli("commands: help, status, config ..., wifi scan, ota begin <bytes> <sha256>, reboot, usb log, usb mavlink, usb download, factory ...\r\n");
     } else if (strcmp(line, "status") == 0) {
         status_show();
+    } else if (strncmp(line, "ota begin ", 10) == 0) {
+        if (airlink_router_fc_armed()) {
+            airlink_usb_write_cli("ERR flight controller armed\r\n");
+        } else {
+            char *end = NULL;
+            errno = 0;
+            const unsigned long image_size = strtoul(line + 10, &end, 10);
+            uint8_t expected_sha256[32];
+            if (errno != 0 || image_size == 0UL || end == NULL || *end != ' ' ||
+                !parse_sha256_text(end + 1, expected_sha256)) {
+                airlink_usb_write_cli("ERR ota syntax\r\n");
+            } else {
+                const esp_err_t err = airlink_ota_stream_begin((size_t)image_size, expected_sha256);
+                if (err != ESP_OK) {
+                    airlink_usb_write_cli("ERR ota begin failed\r\n");
+                } else {
+                    s_usb_ota_deadline_us = esp_timer_get_time() + USB_OTA_TIMEOUT_US;
+                    airlink_usb_write_cli("OK ota ready\r\n");
+                }
+            }
+        }
     } else if (strcmp(line, "wifi scan") == 0) {
         if (airlink_router_fc_armed() || airlink_ota_in_progress()) {
             airlink_usb_write_cli("ERR wifi scan not allowed\r\n");
@@ -529,6 +592,15 @@ static void handle_builtin(const char *line)
     } else if (strncmp(line, "config", 6) == 0 &&
                (line[6] == '\0' || line[6] == ' ')) {
         handle_config(line);
+    } else if (strcmp(line, "usb download") == 0) {
+        if (airlink_router_fc_armed()) {
+            airlink_usb_write_cli("ERR flight controller armed\r\n");
+            return;
+        }
+        airlink_usb_write_cli("OK USB downloader reset window open for 15 seconds\r\n");
+        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(250));
+        s_usb_download_deadline_us = esp_timer_get_time() + USB_DOWNLOAD_WINDOW_US;
+        usb_reset_protection(false);
     } else if (strcmp(line, "reboot") == 0) {
         if (airlink_router_fc_armed()) {
             airlink_usb_write_cli("ERR flight controller armed\r\n");
@@ -568,10 +640,44 @@ static void usb_task(void *argument)
     airlink_escape_matcher_t escape = {0};
     if (s_mode == AIRLINK_USB_LOG_CLI) airlink_usb_write_cli("\r\nAirLink LOG_CLI ready. Type help.\r\n> ");
     while (true) {
-        if (s_mode == AIRLINK_USB_MAVLINK) {
-            while (xQueueReceive(s_tx_queue, &packet, 0) == pdTRUE) {
-                usb_serial_jtag_write_bytes(packet.data, packet.length, pdMS_TO_TICKS(5));
+        if (s_usb_download_deadline_us > 0 &&
+            esp_timer_get_time() >= s_usb_download_deadline_us) {
+            usb_reset_protection(true);
+            s_usb_download_deadline_us = 0;
+            airlink_usb_write_cli("\r\nUSB downloader reset window closed\r\n> ");
+        }
+        if (airlink_ota_stream_active()) {
+            const int ota_count = usb_serial_jtag_read_bytes(rx, sizeof(rx), pdMS_TO_TICKS(20));
+            if (ota_count <= 0) {
+                if (esp_timer_get_time() >= s_usb_ota_deadline_us) {
+                    airlink_ota_stream_abort();
+                    airlink_usb_write_cli("\r\nERR ota receive timeout\r\n> ");
+                }
+                continue;
             }
+            const size_t remaining = airlink_ota_stream_remaining();
+            if ((size_t)ota_count > remaining ||
+                airlink_ota_stream_write(rx, (size_t)ota_count) != ESP_OK) {
+                airlink_ota_stream_abort();
+                airlink_usb_write_cli("\r\nERR ota write failed\r\n> ");
+                continue;
+            }
+            s_usb_ota_deadline_us = esp_timer_get_time() + USB_OTA_TIMEOUT_US;
+            if (airlink_ota_stream_remaining() == 0U) {
+                const esp_err_t finish_err = airlink_ota_stream_finish();
+                if (finish_err != ESP_OK) {
+                    airlink_usb_write_cli("\r\nERR ota verification failed\r\n> ");
+                    continue;
+                }
+                airlink_usb_write_cli("\r\nOK ota verified; rebooting\r\n");
+                usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+            }
+            continue;
+        }
+        while (xQueueReceive(s_tx_queue, &packet, 0) == pdTRUE) {
+            usb_serial_jtag_write_bytes(packet.data, packet.length, pdMS_TO_TICKS(5));
         }
         const int count = usb_serial_jtag_read_bytes(rx, sizeof(rx), pdMS_TO_TICKS(10));
         if (count <= 0) {
@@ -602,13 +708,12 @@ static void usb_task(void *argument)
 esp_err_t airlink_usb_start(airlink_usb_mode_t mode)
 {
     s_mode = mode;
-    /* Host serial stacks may pulse RTS while opening the native USB port.
-     * ESP32-C5 otherwise converts that edge into a software reset, which can
-     * create an endless open/reset/re-enumerate loop. Initial flashing remains
-     * available through the documented physical BOOT procedure because this
-     * volatile bit is set only after the AirLink application has started. */
-    REG_SET_BIT(USB_SERIAL_JTAG_CHIP_RST_REG,
-                USB_SERIAL_JTAG_USB_UART_CHIP_RST_DIS);
+    /* Windows serial stacks can repeatedly pulse the native USB CDC reset
+     * signal while a handle is open.  Disable that application-time reset
+     * source before installing the USB driver so Web Serial and pyserial can
+     * keep a stable bidirectional session.  This register is volatile, so the
+     * physical BOOT strap still enters the ROM downloader after power-up. */
+    usb_reset_protection(true);
     usb_serial_jtag_driver_config_t config = {
         .tx_buffer_size = 4096,
         .rx_buffer_size = 2048,
@@ -622,12 +727,25 @@ esp_err_t airlink_usb_start(airlink_usb_mode_t mode)
             .send = usb_router_send, .name = "usb-mavlink",
         };
         ESP_RETURN_ON_ERROR(airlink_router_register(&endpoint), "usb", "router endpoint");
-    } else {
-        s_console_vprintf = esp_log_set_vprintf(usb_log_tee);
     }
-    return xTaskCreate(usb_task, "usb_mux", 4096, NULL, USB_TASK_PRIORITY, NULL) == pdPASS ?
-           ESP_OK : ESP_ERR_NO_MEM;
+    if (xTaskCreate(usb_task, "usb_mux", USB_TASK_STACK_SIZE, NULL,
+                    USB_TASK_PRIORITY, &s_usb_task) != pdPASS) {
+        if (mode == AIRLINK_USB_MAVLINK) airlink_router_unregister(AIRLINK_ENDPOINT_ID_USB);
+        vQueueDelete(s_tx_queue);
+        s_tx_queue = NULL;
+        usb_serial_jtag_driver_uninstall();
+        return ESP_ERR_NO_MEM;
+    }
+    /* Install the log tee only after the high-priority USB task has been
+     * created and reached its blocking read. This avoids re-entering the USB
+     * driver from scheduler/task-creation logging on the creator's stack. */
+    if (mode == AIRLINK_USB_LOG_CLI) s_console_vprintf = esp_log_set_vprintf(usb_log_tee);
+    return ESP_OK;
 }
 
 void airlink_usb_set_cli_handler(airlink_usb_cli_handler_t handler) { s_cli_handler = handler; }
 bool airlink_usb_connected(void) { return usb_serial_jtag_is_connected(); }
+bool airlink_usb_ready(void)
+{
+    return s_usb_task != NULL && usb_serial_jtag_is_driver_installed();
+}

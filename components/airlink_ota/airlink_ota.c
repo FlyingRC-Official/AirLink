@@ -24,6 +24,18 @@ static atomic_bool s_in_progress;
 static atomic_int_fast64_t s_services_ready_since_us;
 static atomic_int_fast64_t s_last_health_us;
 
+typedef struct {
+    bool active;
+    const esp_partition_t *target;
+    esp_ota_handle_t handle;
+    size_t image_size;
+    size_t written;
+    uint8_t expected_sha256[32];
+    psa_hash_operation_t sha;
+} ota_stream_t;
+
+static ota_stream_t s_stream;
+
 #define OTA_CONFIRM_WINDOW_US (30LL * 1000LL * 1000LL)
 #define OTA_HEALTH_LEASE_US (3LL * 1000LL * 1000LL)
 #define OTA_CONFIRM_DEADLINE_US (60LL * 1000LL * 1000LL)
@@ -86,13 +98,16 @@ static void rollback_confirmation_task(void *argument)
         if (ready && ready_since > 0 && now - ready_since >= OTA_CONFIRM_WINDOW_US &&
             last_health >= ready_since && now - last_health <= OTA_HEALTH_LEASE_US) {
             ESP_LOGI(TAG, "services remained healthy; confirming OTA image");
-            esp_ota_mark_app_valid_cancel_rollback();
-            break;
+            const esp_err_t confirm_err = esp_ota_mark_app_valid_cancel_rollback();
+            if (confirm_err == ESP_OK) break;
+            ESP_LOGE(TAG, "could not confirm OTA image: %s", esp_err_to_name(confirm_err));
+            airlink_ota_services_ready(false);
         }
         if (now - task_started_us >= OTA_CONFIRM_DEADLINE_US) {
             ESP_LOGE(TAG, "services did not sustain health; rolling back");
-            esp_ota_mark_app_invalid_rollback_and_reboot();
-            break;
+            const esp_err_t rollback_err = esp_ota_mark_app_invalid_rollback_and_reboot();
+            ESP_LOGE(TAG, "OTA rollback request failed: %s; retrying",
+                     esp_err_to_name(rollback_err));
         }
     }
     vTaskDelete(NULL);
@@ -105,9 +120,14 @@ esp_err_t airlink_ota_init(void)
 
 void airlink_ota_services_ready(bool ready)
 {
-    atomic_store(&s_services_ready, ready);
-    atomic_store(&s_services_ready_since_us, ready ? esp_timer_get_time() : 0);
-    if (!ready) atomic_store(&s_last_health_us, 0);
+    const bool was_ready = atomic_exchange(&s_services_ready, ready);
+    if (ready && !was_ready) {
+        atomic_store(&s_services_ready_since_us, esp_timer_get_time());
+        atomic_store(&s_last_health_us, 0);
+    } else if (!ready && was_ready) {
+        atomic_store(&s_services_ready_since_us, 0);
+        atomic_store(&s_last_health_us, 0);
+    }
 }
 
 void airlink_ota_health_heartbeat(bool healthy)
@@ -116,6 +136,113 @@ void airlink_ota_health_heartbeat(bool healthy)
 }
 
 bool airlink_ota_in_progress(void) { return atomic_load(&s_in_progress); }
+
+const char *airlink_ota_running_partition(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    return running != NULL ? running->label : "unknown";
+}
+
+int32_t airlink_ota_image_state(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    return running != NULL && esp_ota_get_state_partition(running, &state) == ESP_OK ?
+           (int32_t)state : -1;
+}
+
+bool airlink_ota_stream_active(void) { return s_stream.active; }
+
+size_t airlink_ota_stream_remaining(void)
+{
+    return s_stream.active && s_stream.written < s_stream.image_size ?
+           s_stream.image_size - s_stream.written : 0U;
+}
+
+void airlink_ota_stream_abort(void)
+{
+    if (!s_stream.active) return;
+    psa_hash_abort(&s_stream.sha);
+    esp_ota_abort(s_stream.handle);
+    memset(&s_stream, 0, sizeof(s_stream));
+    atomic_store(&s_in_progress, false);
+    airlink_led_set(AIRLINK_LED_ERROR);
+}
+
+esp_err_t airlink_ota_stream_begin(size_t image_size, const uint8_t expected_sha256[32])
+{
+    if (image_size == 0U || expected_sha256 == NULL || s_stream.active) return ESP_ERR_INVALID_ARG;
+    const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
+    if (target == NULL || image_size > target->size) return ESP_ERR_INVALID_SIZE;
+    bool expected_idle = false;
+    if (!atomic_compare_exchange_strong(&s_in_progress, &expected_idle, true)) return ESP_ERR_INVALID_STATE;
+
+    memset(&s_stream, 0, sizeof(s_stream));
+    s_stream.target = target;
+    s_stream.image_size = image_size;
+    memcpy(s_stream.expected_sha256, expected_sha256, sizeof(s_stream.expected_sha256));
+    esp_err_t err = esp_ota_begin(target, image_size, &s_stream.handle);
+    if (err == ESP_OK) {
+        s_stream.sha = (psa_hash_operation_t)PSA_HASH_OPERATION_INIT;
+        if (psa_hash_setup(&s_stream.sha, PSA_ALG_SHA_256) != PSA_SUCCESS) err = ESP_FAIL;
+    }
+    if (err != ESP_OK) {
+        if (s_stream.handle != 0) esp_ota_abort(s_stream.handle);
+        memset(&s_stream, 0, sizeof(s_stream));
+        atomic_store(&s_in_progress, false);
+        return err;
+    }
+    s_stream.active = true;
+    airlink_led_set(AIRLINK_LED_OTA);
+    return ESP_OK;
+}
+
+esp_err_t airlink_ota_stream_write(const void *data, size_t length)
+{
+    if (!s_stream.active || data == NULL || length == 0U ||
+        length > airlink_ota_stream_remaining()) return ESP_ERR_INVALID_ARG;
+    if (psa_hash_update(&s_stream.sha, data, length) != PSA_SUCCESS) {
+        airlink_ota_stream_abort();
+        return ESP_FAIL;
+    }
+    const esp_err_t err = esp_ota_write(s_stream.handle, data, length);
+    if (err != ESP_OK) {
+        airlink_ota_stream_abort();
+        return err;
+    }
+    s_stream.written += length;
+    return ESP_OK;
+}
+
+esp_err_t airlink_ota_stream_finish(void)
+{
+    if (!s_stream.active || s_stream.written != s_stream.image_size) return ESP_ERR_INVALID_STATE;
+    uint8_t actual_sha[32];
+    size_t actual_sha_length = 0;
+    esp_err_t err = psa_hash_finish(&s_stream.sha, actual_sha, sizeof(actual_sha),
+                                    &actual_sha_length) == PSA_SUCCESS ? ESP_OK : ESP_FAIL;
+    if (err == ESP_OK && (actual_sha_length != sizeof(actual_sha) ||
+        memcmp(actual_sha, s_stream.expected_sha256, sizeof(actual_sha)) != 0)) {
+        err = ESP_ERR_INVALID_CRC;
+    }
+    if (err == ESP_OK) err = esp_ota_end(s_stream.handle);
+    else esp_ota_abort(s_stream.handle);
+    if (err == ESP_OK) {
+        esp_app_desc_t descriptor;
+        err = esp_ota_get_partition_description(s_stream.target, &descriptor);
+        if (err == ESP_OK && strcmp(descriptor.project_name, "airlink") != 0) {
+            err = ESP_ERR_INVALID_VERSION;
+        }
+    }
+    if (err == ESP_OK && !partition_contains_marker(s_stream.target, s_stream.image_size)) {
+        err = ESP_ERR_INVALID_VERSION;
+    }
+    if (err == ESP_OK) err = esp_ota_set_boot_partition(s_stream.target);
+    memset(&s_stream, 0, sizeof(s_stream));
+    atomic_store(&s_in_progress, false);
+    if (err != ESP_OK) airlink_led_set(AIRLINK_LED_ERROR);
+    return err;
+}
 
 esp_err_t airlink_ota_http_upload(httpd_req_t *request)
 {

@@ -230,6 +230,29 @@ export class UsbTransport {
     const status = this.parseStatus(await this.execute("status"));
     return { status, clients: { unavailable_over_usb: true }, can: { unavailable_over_usb: true }, collected_at: new Date().toISOString() };
   }
+  async ota(file, onProgress = () => {}) {
+    if (!(file instanceof Blob) || file.size <= 0) throw new Error("USB OTA 固件文件无效");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const ready = await this.execute(`ota begin ${bytes.length} ${digest}`, 8000);
+    if (!/OK ota ready/.test(ready)) throw new Error(ready.match(/ERR[^\r\n]*/)?.[0] || "设备不支持 USB 固件升级");
+    const completionStart = this.buffer.length;
+    const chunkSize = 1024;
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      await this.writer.write(bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)));
+      onProgress(Math.min(1, (offset + chunkSize) / bytes.length));
+    }
+    const deadline = Date.now() + 45000;
+    while (Date.now() < deadline) {
+      const result = this.buffer.slice(completionStart);
+      if (/OK ota verified; rebooting/.test(result)) return { ok: true, rebooting: true };
+      const error = result.match(/ERR ota[^\r\n]*/)?.[0];
+      if (error) throw new Error(error);
+      await delay(50);
+    }
+    throw new Error("USB OTA 校验响应超时");
+  }
   async disconnect() {
     this.connected = false;
     try { await this.reader?.cancel(); } catch {}

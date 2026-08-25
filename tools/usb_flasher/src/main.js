@@ -7,6 +7,7 @@ import {
 import {
   RELEASE, loadReleaseFirmware, releasePageUrl,
 } from "./release-firmware.js";
+import { watchdogResetEsp32C5 } from "./esp32c5-reset.js";
 import "./styles.css";
 
 const state = {
@@ -25,6 +26,9 @@ const state = {
   credentials: "",
   releaseUrl: releasePageUrl(),
 };
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const USB_CLI_ESCAPE = "+++AIRLINK-CLI\r\n";
 
 const app = document.querySelector("#app");
 const platform = /Mac/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? "") ? "macOS" :
@@ -333,6 +337,72 @@ function usbLabel(port) {
   return `${vendor.toUpperCase()} · ${product.toUpperCase()}`;
 }
 
+async function requestDownloaderWindow(port) {
+  let writer;
+  try {
+    await port.open({ baudRate: 115200, bufferSize: 4096 });
+    await port.setSignals?.({ dataTerminalReady: false, requestToSend: false });
+    writer = port.writable.getWriter();
+    await writer.write(new TextEncoder().encode(`${USB_CLI_ESCAPE}usb download\r\n`));
+    await sleep(300);
+    log("已请求应用开放 15 秒 USB 下载器复位窗口。", "warning");
+  } catch (_) {
+    // A device already in the ROM downloader does not understand the CLI.
+  } finally {
+    try { writer?.releaseLock(); } catch (_) { /* already detached */ }
+    try { await port.close(); } catch (_) { /* reset/re-enumeration closes it */ }
+    await sleep(250);
+  }
+}
+
+async function probeApplication(port) {
+  let reader;
+  let writer;
+  let output = "";
+  try {
+    await port.open({ baudRate: 115200, bufferSize: 4096 });
+    await port.setSignals?.({ dataTerminalReady: false, requestToSend: false });
+    reader = port.readable.getReader();
+    writer = port.writable.getWriter();
+    await writer.write(new TextEncoder().encode(`${USB_CLI_ESCAPE}status\r\n`));
+    const decoder = new TextDecoder();
+    const readTask = (async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        output += decoder.decode(value, { stream: true });
+        if (output.includes("OK status") && output.includes(`firmware=${RELEASE.version}`)) break;
+      }
+    })().catch(() => {});
+    await Promise.race([readTask, sleep(2200)]);
+    const verified = output.includes("OK status") && output.includes(`firmware=${RELEASE.version}`);
+    if (verified) {
+      await writer.write(new TextEncoder().encode("reboot\r\n"));
+      await sleep(100);
+    }
+    return verified;
+  } finally {
+    try { await reader?.cancel(); } catch (_) { /* device may reset */ }
+    try { reader?.releaseLock(); } catch (_) { /* already detached */ }
+    try { writer?.releaseLock(); } catch (_) { /* already detached */ }
+    try { await port.close(); } catch (_) { /* reset/re-enumeration closes it */ }
+  }
+}
+
+async function verifyApplicationBoot(port, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  await sleep(1800);
+  while (Date.now() < deadline) {
+    try {
+      if (await probeApplication(port)) return true;
+    } catch (_) {
+      // Native USB disappears and returns during watchdog reset and first boot.
+    }
+    await sleep(750);
+  }
+  return false;
+}
+
 async function safeDisconnect() {
   try {
     if (state.transport) await state.transport.disconnect();
@@ -354,6 +424,7 @@ async function connectDevice() {
   try {
     await safeDisconnect();
     const port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0x303a }] });
+    await requestDownloaderWindow(port);
     const transport = new Transport(port, false);
     transport.setDeviceLostCallback(() => {
       if (state.flashing && !state.expectingReset) log("USB 设备在烧录过程中断开。", "error");
@@ -493,20 +564,27 @@ async function flashFirmware() {
       },
     });
 
-    setProgress(100, "写入与 MD5 校验完成");
-    setPill(ui.flashStatus, "烧录成功", "success");
-    ui.successPanel.hidden = false;
-    ui.successText.textContent = state.identityBlank ?
-      `首次启动后连接 ${state.ssid}，密码与网页 admin 密码均为你保存的初始密码。` :
-      "设备原有工厂身份与凭据保持不变；松开 BOOT 后重启即可。";
+    setProgress(96, "写入完成，正在执行 ESP32-C5 watchdog reset");
     log("全部固件分区写入并验证成功。", "success");
     if (state.identityBlank) log("一次性初始凭据记录已写入 0x2C000；固件首次启动后会消费并擦除。", "success");
     state.expectingReset = true;
-    try {
-      await state.loader.after("hard_reset");
-    } catch (_) {
-      log("设备已离开下载模式，请手动按 RESET。", "warning");
+    const resetPort = state.port;
+    await watchdogResetEsp32C5(state.loader);
+    try { await state.transport.disconnect(); } catch (_) { /* watchdog detached USB */ }
+    setProgress(98, "等待应用重新枚举并核对版本");
+    const bootVerified = await verifyApplicationBoot(resetPort);
+    if (!bootVerified) {
+      setPill(ui.flashStatus, "写入成功，启动未验证", "warning");
+      log("Flash 校验成功，但未收到目标版本的应用状态。请按 RESET 后重新连接验证。", "warning");
+      return;
     }
+    setProgress(100, "应用启动与版本验证完成");
+    setPill(ui.flashStatus, "烧录并启动成功", "success");
+    ui.successPanel.hidden = false;
+    ui.successText.textContent = state.identityBlank ?
+      `已验证 ${RELEASE.version} 启动。连接 ${state.ssid}，密码与网页 admin 密码均为你保存的初始密码。` :
+      `已验证 ${RELEASE.version} 启动；设备原有工厂身份与凭据保持不变。`;
+    log(`应用 ${RELEASE.version} 已重新枚举并通过 USB 状态校验。`, "success");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setPill(ui.flashStatus, "烧录失败", "danger");

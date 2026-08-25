@@ -85,6 +85,22 @@ for marker in required:
     assert marker in source, f"missing USB configuration guard: {marker}"
 PY
 
+# OTA rollback confirmation must be based on real service health and must not
+# silently discard confirmation/rollback failures.
+python3 - \
+  "$root/components/airlink_ota/airlink_ota.c" \
+  "$root/main/app_main.c" <<'PY'
+from pathlib import Path
+import sys
+
+ota, main = (Path(path).read_text() for path in sys.argv[1:])
+assert 'atomic_exchange(&s_services_ready, ready)' in ota
+assert 'confirm_err = esp_ota_mark_app_valid_cancel_rollback()' in ota
+assert 'rollback_err = esp_ota_mark_app_invalid_rollback_and_reboot()' in ota
+assert 'airlink_ota_health_heartbeat(true)' not in main
+assert 'services_healthy(&wifi)' in main
+PY
+
 # The universal image must retain both halves of the point-to-point bridge and
 # a physical USB recovery path when the ground role is carrying MAVLink.
 python3 - \
@@ -108,7 +124,13 @@ assert 'airlink_stream_chunk_size(length - offset' in router
 assert '+++AIRLINK-CLI\\r\\n' in usb
 assert '#define USB_QUEUE_DEPTH 64' in usb
 assert '#define USB_TASK_PRIORITY 19' in usb
+assert '#define USB_TASK_STACK_SIZE 8192' in usb
+assert 'usb download' in usb
+assert 'USB_DOWNLOAD_WINDOW_US' in usb
 assert 'usb_queue_drops=' in usb
 assert 'config.bridge_role = AIRLINK_BRIDGE_GROUND' in usb
 assert 'hardware_ok && !recovery && !ground_bridge' in main
+assert 'airlink_usb_reset_guard_enable();' in main
+assert 'ESP_ERROR_CHECK(airlink_usb_start' not in main
+assert 'airlink_ota_health_heartbeat(healthy);' in main
 PY

@@ -27,6 +27,7 @@ extern const uint8_t index_html_gz_start[] asm("_binary_index_html_gz_start");
 extern const uint8_t index_html_gz_end[] asm("_binary_index_html_gz_end");
 static bool s_recovery_mode;
 static bool s_read_only_mode;
+static httpd_handle_t s_server;
 
 /* The standalone configurator is opened from file:// on Windows and macOS,
  * which browsers serialize as the opaque "null" origin. Authentication is
@@ -132,7 +133,8 @@ static esp_err_t status_handler(httpd_req_t *request)
         ",\"arbitration_lost\":%" PRIu32 ",\"bus_off\":%" PRIu32
         ",\"nodes\":%u},"
         "\"listeners\":{\"udp_port\":%u,\"tcp_port\":%u},"
-        "\"ota\":{\"in_progress\":%s}}",
+        "\"ota\":{\"in_progress\":%s,\"running_partition\":\"%s\","
+        "\"image_state\":%" PRId32 "}}",
         AIRLINK_PRODUCT_NAME, AIRLINK_HARDWARE_ID, app->version, app->date, app->time,
         active_config.serial_number, s_recovery_mode ? "true" : "false",
         s_read_only_mode ? "true" : "false",
@@ -148,7 +150,8 @@ static esp_err_t status_handler(httpd_req_t *request)
         can.rx_frames, can.tx_frames, can.bus_errors, can.dronecan_errors,
         can.arbitration_lost, can.bus_off_count, can.dronecan_nodes,
         active_config.udp_port, active_config.tcp_port,
-        airlink_ota_in_progress() ? "true" : "false");
+        airlink_ota_in_progress() ? "true" : "false",
+        airlink_ota_running_partition(), airlink_ota_image_state());
     return send_json(request, json);
 }
 
@@ -380,10 +383,10 @@ esp_err_t airlink_web_start(bool recovery_mode, bool read_only_mode)
     config.max_uri_handlers = 26;
     config.stack_size = 8192;
     config.lru_purge_enable = true;
-    httpd_handle_t server;
+    httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
     if (err != ESP_OK) return err;
-#define URI(path_, method_, handler_) do { const httpd_uri_t u = {.uri=(path_),.method=(method_),.handler=(handler_)}; if ((err=httpd_register_uri_handler(server,&u))!=ESP_OK) return err; } while(0)
+#define URI(path_, method_, handler_) do { const httpd_uri_t u = {.uri=(path_),.method=(method_),.handler=(handler_)}; if ((err=httpd_register_uri_handler(server,&u))!=ESP_OK) goto fail; } while(0)
     URI("/", HTTP_GET, index_handler);
     URI("/api/v1/status", HTTP_GET, status_handler);
     URI("/api/v1/capabilities", HTTP_GET, capabilities_handler);
@@ -407,5 +410,11 @@ esp_err_t airlink_web_start(bool recovery_mode, bool read_only_mode)
     URI("/api/v1/actions/factory-reset", HTTP_OPTIONS, cors_options_handler);
     URI("/api/v1/ota", HTTP_OPTIONS, cors_options_handler);
 #undef URI
+    s_server = server;
     return ESP_OK;
+fail:
+    httpd_stop(server);
+    return err;
 }
+
+bool airlink_web_ready(void) { return s_server != NULL; }

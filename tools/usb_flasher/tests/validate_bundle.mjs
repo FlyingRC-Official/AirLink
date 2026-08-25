@@ -8,6 +8,7 @@ import {
 import {
   RELEASE, loadReleaseFirmware, rawFirmwareUrl, releaseApiUrl, sha256,
 } from "../src/release-firmware.js";
+import { ESP32C5_LP_WDT, watchdogResetEsp32C5 } from "../src/esp32c5-reset.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -151,12 +152,31 @@ releaseMismatch.metadata.assets.find((asset) => asset.name === "partition-table.
 await expectFailure(releaseMismatch, /GitHub Release digest 不一致/);
 
 const mainSource = await readFile(join(root, "src/main.js"), "utf8");
+const resetSource = await readFile(join(root, "src/esp32c5-reset.js"), "utf8");
 const releaseSource = await readFile(join(root, "src/release-firmware.js"), "utf8");
 assert.match(mainSource, /eraseAll:\s*false/);
 assert.doesNotMatch(mainSource, /eraseFlash\s*\(/);
 assert.match(mainSource, /flashMode:\s*"keep"/);
 assert.match(mainSource, /flashFreq:\s*"keep"/);
 assert.match(mainSource, /flashSize:\s*"keep"/);
+assert.match(mainSource, /requestDownloaderWindow\(port\)/);
+assert.match(mainSource, /usb download/);
+assert.match(mainSource, /watchdogResetEsp32C5/);
+assert.match(resetSource, /0xd0000102/);
+assert.match(mainSource, /verifyApplicationBoot/);
+assert.match(mainSource, /firmware=\$\{RELEASE\.version\}/);
+assert.doesNotMatch(mainSource, /loader\.after\("hard_reset"\)/);
+
+const writes = [];
+await watchdogResetEsp32C5({
+  async writeReg(address, value) { writes.push([address, value]); },
+}, async (milliseconds) => assert.equal(milliseconds, 900));
+assert.deepEqual(writes, [
+  [ESP32C5_LP_WDT.protect, ESP32C5_LP_WDT.key],
+  [ESP32C5_LP_WDT.config1, 2000],
+  [ESP32C5_LP_WDT.config0, ESP32C5_LP_WDT.resetConfig],
+  [ESP32C5_LP_WDT.protect, 0],
+]);
 assert.match(mainSource, /PROVISION\.address/);
 assert.doesNotMatch(mainSource, /localStorage|sessionStorage/);
 assert.doesNotMatch(mainSource, /address:\s*0x9000|address:\s*0x1c000/);

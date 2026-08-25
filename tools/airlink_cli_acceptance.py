@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import time
+from pathlib import Path
 
 import serial
 
@@ -96,6 +98,24 @@ def check_atomic_abort(port: serial.Serial, generation: int) -> None:
         raise RuntimeError("aborted transaction changed the configuration generation")
 
 
+def usb_ota(port: serial.Serial, image_path: Path) -> None:
+    image = image_path.read_bytes()
+    digest = hashlib.sha256(image).hexdigest()
+    response = issue(port, f"ota begin {len(image)} {digest}", 2.5)
+    if "OK ota ready" not in response:
+        safe = " ".join(response.replace("\r", " ").replace("\n", " ").split())[-240:]
+        raise RuntimeError(f"device rejected USB OTA begin: {safe}")
+    for offset in range(0, len(image), 256):
+        port.write(image[offset:offset + 256])
+    port.flush()
+    try:
+        result = read_for(port, 8.0).decode("utf-8", errors="replace")
+    except serial.SerialException:
+        result = ""
+    if "OK ota verified; rebooting" not in result:
+        raise RuntimeError("USB OTA did not report verified completion")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", required=True)
@@ -105,6 +125,10 @@ def main() -> int:
                         help="read only and print filtered boot/reset diagnostics")
     parser.add_argument("--summary-only", action="store_true",
                         help="with --diagnose-boot, omit diagnostic log lines")
+    parser.add_argument("--open-downloader", action="store_true",
+                        help="enter CLI and open the bounded esptool reset window")
+    parser.add_argument("--ota-image", type=Path,
+                        help="stream a signed AirLink application image over USB CLI")
     parser.add_argument("--dtr", action="store_true", help="assert DTR while diagnosing")
     parser.add_argument("--rts", action="store_true", help="assert RTS while diagnosing")
     args = parser.parse_args()
@@ -120,11 +144,22 @@ def main() -> int:
                 print(summarize_boot(boot_output) or "No boot/reset diagnostic lines observed")
             return 0
         status_output, split_escape = enter_cli(port)
+        if args.open_downloader:
+            response = issue(port, "usb download", 0.5)
+            if "OK USB downloader reset window open" not in response:
+                raise RuntimeError("device did not open the USB downloader reset window")
+            print(f"PASS port={args.port} downloader_window=15s")
+            return 0
+        if args.ota_image is not None:
+            usb_ota(port, args.ota_image)
+            print(f"PASS port={args.port} usb_ota={args.ota_image.name}")
+            return 0
         status = parse_fields(status_output)
         required = {
             "firmware", "vehicle_queue_drops", "bridge_tx_queue_drops",
             "wifi_reconnects_total", "wifi_reconnect_streak", "free_heap",
-            "reset_reason", "ota_in_progress",
+            "reset_reason", "ota_in_progress", "ota_running_partition",
+            "ota_image_state",
         }
         missing = sorted(required - status.keys())
         if missing:
@@ -146,6 +181,8 @@ def main() -> int:
             f"PASS port={args.port} firmware={status['firmware']} "
             f"serial={config.get('serial_number', 'unknown')} "
             f"role={config.get('bridge_role', 'unknown')} "
+            f"partition={status['ota_running_partition']} "
+            f"image_state={status['ota_image_state']} "
             f"split_escape={'yes' if split_escape else 'not-required'} "
             f"atomic_abort=yes"
         )
