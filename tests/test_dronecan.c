@@ -55,7 +55,7 @@ static void test_targetted_golden_vector(void)
     uint8_t encoded[UAVCAN_TUNNEL_TARGETTED_MAX_SIZE] = {0};
     const uint32_t length = uavcan_tunnel_Targetted_encode(&message, encoded);
     static const uint8_t expected[] = {
-        0x01, 0x0a, 0x00, 0x00, 0xc2, 0x01, 0xfd, 0x01, 0x02, 0x03,
+        0x01, 0x14, 0x00, 0x00, 0xc2, 0x01, 0xfd, 0x01, 0x02, 0x03,
     };
     assert(length == sizeof(expected));
     assert(memcmp(encoded, expected, sizeof(expected)) == 0);
