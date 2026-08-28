@@ -155,8 +155,8 @@ from pathlib import Path
 import sys
 
 router, wifi, usb, main = (Path(path).read_text() for path in sys.argv[1:])
-assert 'type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE ||' in router
-assert 'type == AIRLINK_ENDPOINT_CAN' in router
+assert 'type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_CAN ||' in router
+assert 'type == AIRLINK_ENDPOINT_BRIDGE' in router
 assert '.type = AIRLINK_ENDPOINT_BRIDGE' in wifi
 assert 'bridge_connect()' in wifi
 assert 'replacing stale TCP client from reconnecting station' in wifi
