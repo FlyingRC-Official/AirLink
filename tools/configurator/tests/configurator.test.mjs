@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { configDiff, configToCliOperations, createProfile, evaluateLink, parseCliConfig, parseProfile, redactDiagnostics, validateConfig } from "../public/js/config-model.js";
+import { configDiff, configToCliOperations, createProfile, evaluateLink, normalizeFirmwareVersion, parseCliConfig, parseProfile, redactDiagnostics, validateConfig } from "../public/js/config-model.js";
+import { UsbTransport } from "../public/js/transports.js";
 
 const root = new URL("../", import.meta.url);
 
@@ -15,6 +16,13 @@ test("parses firmware config show output", () => {
   assert.equal(parsed.wifi_mode, 2);
   assert.equal(parsed.uart_baud, 115200);
   assert.equal(parsed.can_node_id, 125);
+});
+
+test("normalizes OTA versions and reads the USB firmware version", () => {
+  assert.equal(normalizeFirmwareVersion("v0.3.3-DEV"), "0.3.3-dev");
+  assert.equal(normalizeFirmwareVersion("0.3.3-dev"), "0.3.3-dev");
+  const transport = new UsbTransport({ onLog() {}, onRaw() {} });
+  assert.equal(transport.parseStatus("OK status\r\nfirmware=0.3.3-dev\r\nfc_seen=0\r\n> ").firmware, "0.3.3-dev");
 });
 
 test("orders USB role transitions safely", () => {
@@ -136,6 +144,8 @@ test("supports verified firmware updates over USB", async () => {
   assert.match(transports, /OK ota verified; rebooting/);
   assert.match(main, /async function otaUpdate\(\) \{\s+if \(!transport \|\| busy\) return;/);
   assert.match(main, /async function otaFromGithub\(\) \{\s+if \(!transport \|\| busy\) return;/);
+  assert.match(main, /normalizeFirmwareVersion\(manifest\.version\)/);
+  assert.doesNotMatch(main, /0\\\.3\\\.2-dev/);
   assert.match(firmware, /airlink_ota_stream_begin/);
   assert.match(firmware, /airlink_ota_stream_finish/);
 });

@@ -157,7 +157,7 @@ export class UsbTransport {
   parseStatus(output) {
     const read = (key) => String(output).match(new RegExp(`${key}=([^\\r\\n]+)`))?.[1];
     return {
-      firmware: "AirLink C5 · USB",
+      firmware: read("firmware") || "AirLink C5 · USB",
       fc_seen: Number(read("fc_seen")) === 1,
       fc_armed: Number(read("fc_armed")) === 1,
       wifi: {

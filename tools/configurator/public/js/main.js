@@ -1,4 +1,4 @@
-import { configDiff, createProfile, evaluateLink, parseProfile, redactDiagnostics, validateConfig } from "./config-model.js";
+import { configDiff, createProfile, evaluateLink, normalizeFirmwareVersion, parseProfile, redactDiagnostics, validateConfig } from "./config-model.js";
 import { HelperTransport, UsbTransport, WifiTransport } from "./transports.js";
 
 const $ = (id) => document.getElementById(id);
@@ -426,7 +426,11 @@ async function performOta(manifest, firmware) {
   await transport.ota(firmware, (progress) => { ui.otaProgress.value = progress; ui.otaState.textContent = `上传 ${Math.round(progress * 100)}%`; }, metadata);
   ui.otaState.textContent = "模块正在重启并进行健康确认";
   await reconnectAfterReboot(transport, currentConfig, false);
-  if (!/0\.3\.2-dev/i.test(String(currentStatus?.firmware || ""))) throw new Error("设备已恢复在线，但仍报告旧版本；OTA 可能已回滚");
+  const expectedVersion = normalizeFirmwareVersion(manifest.version);
+  const runningVersion = normalizeFirmwareVersion(currentStatus?.firmware);
+  if (!runningVersion || runningVersion !== expectedVersion) {
+    throw new Error(`设备已恢复在线，但运行版本为 ${currentStatus?.firmware || "未知"}，预期为 ${manifest.version}；OTA 可能已回滚`);
+  }
   const healthDeadline = Date.now() + 45000;
   while (Date.now() < healthDeadline) {
     const status = transport.type === "usb" ? (await transport.refresh()).status : await transport.call("/api/v1/status");

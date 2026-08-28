@@ -91,6 +91,10 @@ export function configToCliOperations(current, desired) {
 
 export const secretKeys = new Set(["ap_password", "sta_password", "admin_password"]);
 
+export function normalizeFirmwareVersion(value) {
+  return String(value ?? "").trim().replace(/^v/i, "").toLowerCase();
+}
+
 export function configDiff(current = {}, desired = {}) {
   const labels = {
     route_mode: "Routing mode", fc_transport: "FC transport", uart_baud: "UART/virtual baud", wifi_mode: "Wi-Fi mode",

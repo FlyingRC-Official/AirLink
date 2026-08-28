@@ -184,6 +184,13 @@ jobs:
         run: |
           find release-assets -type f -maxdepth 2 -print
           mapfile -d '' assets < <(find release-assets -type f -print0)
-          gh release create v0.3.3-dev "${assets[@]}" \
-            --verify-tag --prerelease --target master --title "AirLink V0.3.3-DEV" \
-            --notes-file docs/RELEASE_NOTES_v0.3.3-dev.md
+          if gh release view v0.3.3-dev >/dev/null 2>&1; then
+            gh release upload v0.3.3-dev "${assets[@]}" --clobber
+            gh release edit v0.3.3-dev \
+              --prerelease --target master --title "AirLink V0.3.3-DEV" \
+              --notes-file docs/RELEASE_NOTES_v0.3.3-dev.md
+          else
+            gh release create v0.3.3-dev "${assets[@]}" \
+              --verify-tag --prerelease --target master --title "AirLink V0.3.3-DEV" \
+              --notes-file docs/RELEASE_NOTES_v0.3.3-dev.md
+          fi
