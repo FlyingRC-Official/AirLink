@@ -1,12 +1,13 @@
 export const enumMaps = {
   route_mode: [["mavlink", "transparent"], [0, 1]],
+  fc_transport: [["uart", "dronecan"], [0, 1]],
   wifi_mode: [["ap", "sta", "apsta"], [0, 1, 2]],
   wifi_band: [["auto", "2g", "5g"], [0, 1, 2]],
   usb_mode: [["log", "mavlink"], [0, 1]],
   bridge_role: [["off", "air", "ground"], [0, 1, 2]],
 };
 
-const numericKeys = new Set(["uart_baud", "udp_port", "tcp_port", "can_bitrate", "led_brightness"]);
+const numericKeys = new Set(["uart_baud", "udp_port", "tcp_port", "can_bitrate", "can_node_id", "can_remote_node_id", "can_serial_id", "led_brightness"]);
 
 export function parseCliConfig(output) {
   const config = {};
@@ -33,6 +34,15 @@ export function validateConfig(config, transport) {
   for (const [name, value] of [["UDP", config.udp_port], ["TCP", config.tcp_port]]) {
     if (!Number.isInteger(value) || value < 1 || value > 65535) errors.push(`${name} 端口需为 1–65535`);
   }
+  if (Number(config.fc_transport) === 1 && Number(config.route_mode) !== 0) errors.push("DroneCAN 飞控接口只支持 MAVLink 路由模式");
+  const localNode = config.can_node_id ?? 125;
+  const remoteNode = config.can_remote_node_id ?? 10;
+  const serialId = config.can_serial_id ?? 0;
+  for (const [name, value] of [["AirLink CAN 节点", localNode], ["飞控 CAN 节点", remoteNode]]) {
+    if (!Number.isInteger(value) || value < 1 || value > 127) errors.push(`${name}需为 1–127`);
+  }
+  if (Number(localNode) === Number(remoteNode)) errors.push("AirLink 与飞控 CAN 节点不能相同");
+  if (!Number.isInteger(serialId) || serialId < 0 || serialId > 15) errors.push("虚拟串口 ID 需为 0–15");
   if (transport === "usb") {
     for (const value of [config.ap_ssid, config.ap_password, config.sta_ssid, config.sta_password, config.admin_password]) {
       if (value && !/^[\x20-\x7e]+$/.test(value)) {
@@ -65,7 +75,7 @@ export function configToCliOperations(current, desired) {
     const clearingStaValue = (key === "sta_ssid" || key === "sta_password") && desired[key] === "" && current[key];
     if (desired[key] !== undefined && (desired[key] !== "" || clearingStaValue) && desired[key] !== current[key]) add(key, desired[key]);
   }
-  for (const key of ["route_mode", "uart_baud", "wifi_band", "udp_port", "tcp_port", "can_bitrate", "led_brightness"]) {
+  for (const key of ["route_mode", "fc_transport", "uart_baud", "wifi_band", "udp_port", "tcp_port", "can_bitrate", "can_node_id", "can_remote_node_id", "can_serial_id", "led_brightness"]) {
     if (desired[key] !== undefined && Number(desired[key]) !== Number(current[key])) add(key, desired[key]);
   }
   if (desired.admin_password) add("admin_password", desired.admin_password);
@@ -83,11 +93,12 @@ export const secretKeys = new Set(["ap_password", "sta_password", "admin_passwor
 
 export function configDiff(current = {}, desired = {}) {
   const labels = {
-    route_mode: "Routing mode", uart_baud: "UART baud", wifi_mode: "Wi-Fi mode",
+    route_mode: "Routing mode", fc_transport: "FC transport", uart_baud: "UART/virtual baud", wifi_mode: "Wi-Fi mode",
     wifi_band: "Wi-Fi band", ap_ssid: "AP SSID", ap_password: "AP password",
     sta_ssid: "STA SSID", sta_password: "STA password", udp_port: "UDP port",
     tcp_port: "TCP port", usb_mode: "USB mode", bridge_role: "Bridge role",
-    can_bitrate: "CAN bitrate", led_brightness: "LED brightness", admin_password: "Admin password",
+    can_bitrate: "CAN bitrate", can_node_id: "AirLink CAN node", can_remote_node_id: "FC CAN node",
+    can_serial_id: "Virtual serial ID", led_brightness: "LED brightness", admin_password: "Admin password",
   };
   const rows = [];
   for (const key of Object.keys(labels)) {
@@ -147,10 +158,16 @@ export function evaluateLink(before, after, config = {}) {
     const get = (object) => path.split(".").reduce((value, key) => value?.[key], object);
     return Number(get(after) || 0) - Number(get(before) || 0);
   };
+  const dronecan = Number(config.fc_transport || 0) === 1;
+  const vehiclePath = dronecan ? "can.tunnel_rx_bytes" : "uart.bytes_in";
+  const vehicleBytes = Math.max(0, delta(vehiclePath));
+  const queueDrop = dronecan ?
+    delta("can.high_queue_drops") + delta("can.normal_queue_drops") :
+    delta("uart.vehicle_queue_drops") + delta("uart.bridge_tx_queue_drops");
   const checks = [
     { id: "fc", state: after.fc_seen ? "pass" : "not_observed", detail: after.fc_seen ? "Flight controller traffic detected" : "No flight-controller traffic observed" },
-    { id: "uart", state: delta("uart.bytes_in") > 0 ? "pass" : "not_observed", detail: `${Math.max(0, delta("uart.bytes_in"))} UART bytes in sample` },
-    { id: "queues", state: delta("uart.vehicle_queue_drops") > 0 || delta("uart.bridge_tx_queue_drops") > 0 ? "fail" : "pass", detail: "Queue drop delta checked" },
+    { id: "vehicle", state: vehicleBytes > 0 ? "pass" : "not_observed", detail: `${vehicleBytes} vehicle bytes in sample` },
+    { id: "queues", state: queueDrop > 0 ? "fail" : "pass", detail: "Queue drop delta checked" },
     { id: "wifi", state: delta("wifi.reconnects_total") > 0 ? "fail" : "pass", detail: "Wi-Fi reconnect delta checked" },
     { id: "bridge", state: Number(config.bridge_role || 0) === 0 ? "not_observed" : after.wifi?.bridge_connected ? "pass" : "fail", detail: "Bridge state checked" },
   ];

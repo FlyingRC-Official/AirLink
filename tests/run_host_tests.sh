@@ -18,6 +18,20 @@ cc -std=c11 -Wall -Wextra -Werror \
   "$root/components/airlink_core/airlink_stream.c" -o "$out-stream"
 "$out-stream"
 
+cc -std=c11 -Wall -Wextra -Werror \
+  -DCANARD_ENABLE_CANFD=0 -DCANARD_MULTI_IFACE=0 \
+  -I"$root/components/airlink_can/include" \
+  -I"$root/components/airlink_can/dsdl_generated/include" \
+  -I"$root/components/airlink_can/libcanard" \
+  "$root/tests/test_dronecan.c" \
+  "$root/components/airlink_can/airlink_dronecan.c" \
+  "$root/components/airlink_can/libcanard/canard.c" \
+  "$root/components/airlink_can/dsdl_generated/src/uavcan.protocol.NodeStatus.c" \
+  "$root/components/airlink_can/dsdl_generated/src/uavcan.protocol.GetNodeInfo_res.c" \
+  "$root/components/airlink_can/dsdl_generated/src/uavcan.tunnel.Targetted.c" \
+  -o "$out-dronecan"
+"$out-dronecan"
+
 # A blank device has no "airlink" namespace. The initial open must be
 # read-write so first boot can create it before storing the default A/B record.
 if grep -F 'nvs_open(NVS_NAMESPACE, NVS_READONLY' \
@@ -51,6 +65,33 @@ assert positions["esp_wifi_set_config(WIFI_IF_AP"] < positions["esp_wifi_start()
 assert positions["esp_wifi_set_config(WIFI_IF_STA"] < positions["esp_wifi_start()"]
 assert positions["esp_wifi_start()"] < positions["esp_wifi_set_band_mode(band)"]
 assert positions["esp_wifi_set_band_mode(band)"] < positions["esp_wifi_connect()"]
+PY
+
+# The CAN transceiver SILENT input is externally pulled high. Production
+# firmware must explicitly drive GPIO8 low before the CAN service starts.
+python3 - \
+  "$root/components/airlink_board/include/airlink_board.h" \
+  "$root/components/airlink_board/airlink_board.c" <<'PY'
+from pathlib import Path
+import sys
+
+header, source = (Path(path).read_text() for path in sys.argv[1:])
+assert '#define AIRLINK_GPIO_CAN_SILENT 8' in header
+assert 'gpio_set_level(AIRLINK_GPIO_CAN_SILENT, 0)' in source
+PY
+
+# ESP-IDF TWAI v2 queues frame pointers. TX frames and their payload buffers
+# must have static lifetime and be released only from the completion callback.
+python3 - "$root/components/airlink_can/airlink_can.c" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text()
+assert 'static twai_frame_t s_tx_frame;' in source
+assert 'static uint8_t s_tx_data[8];' in source
+assert '.on_tx_done = on_tx_done' in source
+assert 'event->done_tx_frame == &s_tx_frame' in source
+assert '.buffer = s_tx_data' in source
 PY
 
 # Release builds must retain a local USB configuration path so a board can be
@@ -114,7 +155,8 @@ from pathlib import Path
 import sys
 
 router, wifi, usb, main = (Path(path).read_text() for path in sys.argv[1:])
-assert 'type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE' in router
+assert 'type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE ||' in router
+assert 'type == AIRLINK_ENDPOINT_CAN' in router
 assert '.type = AIRLINK_ENDPOINT_BRIDGE' in wifi
 assert 'bridge_connect()' in wifi
 assert 'replacing stale TCP client from reconnecting station' in wifi
@@ -163,4 +205,29 @@ assert 'airlink_usb_reset_guard_enable();' in main
 assert 'ESP_ERROR_CHECK(airlink_usb_start' not in main
 assert 'airlink_ota_health_heartbeat(healthy);' in main
 assert 'airlink_diag_mark_boot_stage("healthy")' in main
+PY
+
+# DroneCAN tunneling must stay non-blocking, retain independent priorities, and
+# recover a bus-off event without enabling data TX in diagnostic/factory mode.
+python3 - \
+  "$root/components/airlink_can/airlink_can.c" \
+  "$root/components/airlink_config/airlink_config.c" <<'PY'
+from pathlib import Path
+import sys
+
+can, config = (Path(path).read_text() for path in sys.argv[1:])
+for marker in [
+    'HIGH_QUEUE_DEPTH', 'NORMAL_QUEUE_DEPTH', 'HIGH_BURST_LIMIT',
+    'xQueueSend(queue, &packet, 0)', 'high_queue_drops', 'normal_queue_drops',
+    'TWAI_ERROR_BUS_OFF', 'twai_node_recover',
+    'options->tunnel_enabled && !options->factory_mode',
+    'UAVCAN_TUNNEL_PROTOCOL_MAVLINK2', 'NODE_STATUS_INTERVAL_US',
+    'UAVCAN_PROTOCOL_GETNODEINFO_ID',
+]:
+    assert marker in can, f'missing DroneCAN production guard: {marker}'
+for marker in [
+    'config_record_v1_t', 'record_v1_crc', 'migrate_v1',
+    'AIRLINK_FC_TRANSPORT_UART', 'schema_migrated', 'save_locked(&s_config)',
+]:
+    assert marker in config, f'missing config migration guard: {marker}'
 PY

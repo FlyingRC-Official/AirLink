@@ -104,6 +104,11 @@ static const char *route_mode_name(airlink_route_mode_t mode)
     return mode == AIRLINK_ROUTE_TRANSPARENT ? "transparent" : "mavlink";
 }
 
+static const char *fc_transport_name(airlink_fc_transport_t transport)
+{
+    return transport == AIRLINK_FC_TRANSPORT_DRONECAN ? "dronecan" : "uart";
+}
+
 static const char *wifi_mode_name(airlink_wifi_mode_t mode)
 {
     if (mode == AIRLINK_WIFI_STA) return "sta";
@@ -146,7 +151,9 @@ static void status_show(void)
     airlink_can_get_status(&can);
     airlink_diag_get(&diag);
     const uint8_t vehicle_endpoint = config.bridge_role == AIRLINK_BRIDGE_GROUND ?
-                                     AIRLINK_ENDPOINT_ID_BRIDGE : AIRLINK_ENDPOINT_ID_FC_UART;
+        AIRLINK_ENDPOINT_ID_BRIDGE :
+        (config.fc_transport == AIRLINK_FC_TRANSPORT_DRONECAN ?
+         AIRLINK_ENDPOINT_ID_FC_CAN : AIRLINK_ENDPOINT_ID_FC_UART);
     airlink_router_get_stats(vehicle_endpoint, &fc);
     airlink_router_get_stats(AIRLINK_ENDPOINT_ID_USB, &usb);
     if (config.bridge_role == AIRLINK_BRIDGE_AIR) {
@@ -161,7 +168,7 @@ static void status_show(void)
     }
 
     const esp_app_desc_t *app = esp_app_get_description();
-    char output[2048];
+    char output[3072];
     snprintf(output, sizeof(output),
              "OK status\r\n"
              "firmware=%s\r\n"
@@ -217,11 +224,22 @@ static void status_show(void)
              "uart_normal_queue_drops=%" PRIu32 "\r\n"
              "can_rx_frames=%" PRIu32 "\r\n"
              "can_tx_frames=%" PRIu32 "\r\n"
-             "can_bus_errors=%" PRIu32 "\r\n"
-             "can_dronecan_errors=%" PRIu32 "\r\n"
-             "can_arbitration_lost=%" PRIu32 "\r\n"
-             "can_bus_off=%" PRIu32 "\r\n"
+              "can_bus_errors=%" PRIu32 "\r\n"
+              "can_dronecan_errors=%" PRIu32 "\r\n"
+              "can_arbitration_lost=%" PRIu32 "\r\n"
+              "can_tx_error_count=%" PRIu16 "\r\n"
+              "can_rx_error_count=%" PRIu16 "\r\n"
+              "can_bus_off=%" PRIu32 "\r\n"
              "can_dronecan_nodes=%u\r\n"
+             "can_tunnel_rx_bytes=%" PRIu64 "\r\n"
+             "can_tunnel_tx_bytes=%" PRIu64 "\r\n"
+             "can_tunnel_rx_transfers=%" PRIu32 "\r\n"
+             "can_tunnel_tx_transfers=%" PRIu32 "\r\n"
+             "can_tunnel_drops=%" PRIu32 "\r\n"
+             "can_high_queue_drops=%" PRIu32 "\r\n"
+             "can_normal_queue_drops=%" PRIu32 "\r\n"
+             "can_keepalives=%" PRIu32 "\r\n"
+             "can_peer_online=%u\r\n"
              "udp_listener_port=%u\r\n"
              "tcp_listener_port=%u\r\n"
              "ota_in_progress=%u\r\n"
@@ -252,7 +270,12 @@ static void status_show(void)
              uart.driver_restarts, uart.high_queue_drops,
              uart.normal_queue_drops, can.rx_frames, can.tx_frames,
              can.bus_errors, can.dronecan_errors, can.arbitration_lost,
-             can.bus_off_count, can.dronecan_nodes, config.udp_port,
+             can.tx_error_count, can.rx_error_count,
+             can.bus_off_count, can.dronecan_nodes,
+             can.tunnel_rx_bytes, can.tunnel_tx_bytes,
+             can.tunnel_rx_transfers, can.tunnel_tx_transfers,
+             can.tunnel_drops, can.high_queue_drops, can.normal_queue_drops,
+             can.keepalives, can.peer_online, config.udp_port,
              config.tcp_port, airlink_ota_in_progress(),
              airlink_ota_running_partition(), airlink_ota_image_state());
     airlink_usb_write_cli(output);
@@ -290,6 +313,7 @@ static void config_show(void)
     snprintf(output, sizeof(output),
              "OK config generation=%" PRIu32 "\r\n"
              "route_mode=%s\r\n"
+             "fc_transport=%s\r\n"
              "uart_baud=%" PRIu32 "\r\n"
              "wifi_mode=%s\r\n"
              "wifi_band=%s\r\n"
@@ -302,14 +326,19 @@ static void config_show(void)
              "usb_mode=%s\r\n"
              "bridge_role=%s\r\n"
              "can_bitrate=%" PRIu32 "\r\n"
+             "can_node_id=%u\r\n"
+             "can_remote_node_id=%u\r\n"
+             "can_serial_id=%d\r\n"
              "led_brightness=%u\r\n"
              "serial_number=%s\r\n"
              "admin_password=%s\r\n",
              airlink_config_generation(), route_mode_name(config.route_mode),
+             fc_transport_name(config.fc_transport),
              config.uart_baud, wifi_mode_name(config.wifi_mode),
              wifi_band_name(config.wifi_band), config.ap_ssid, config.ap_password,
              config.sta_ssid, config.sta_password, config.udp_port, config.tcp_port,
              usb_mode_name(config.usb_mode), bridge_role_name(config.bridge_role), config.can_bitrate,
+             config.can_node_id, config.can_remote_node_id, config.can_serial_id,
              config.led_brightness, config.serial_number, config.admin_password);
     airlink_usb_write_cli(output);
 }
@@ -319,6 +348,7 @@ static void config_help(void)
     airlink_usb_write_cli(
         "config show\r\n"
         "config set route_mode mavlink|transparent\r\n"
+        "config set fc_transport uart|dronecan\r\n"
         "config set uart_baud 57600|115200|230400|460800|921600\r\n"
         "config set wifi_mode ap|sta|apsta\r\n"
         "config set wifi_band auto|2g|5g\r\n"
@@ -331,6 +361,9 @@ static void config_help(void)
         "config set usb_mode log|mavlink\r\n"
         "config set bridge_role off|air|ground\r\n"
         "config set can_bitrate 125000|250000|500000|1000000\r\n"
+        "config set can_node_id 1..127\r\n"
+        "config set can_remote_node_id 1..127\r\n"
+        "config set can_serial_id 0..15\r\n"
         "config set led_brightness 0..100\r\n"
         "config set admin_password VALUE\r\n"
         "config begin\r\n"
@@ -359,6 +392,12 @@ static bool config_apply_value(airlink_config_t *config, const char *arguments,
         if (strcmp(value, "mavlink") == 0) config->route_mode = AIRLINK_ROUTE_MAVLINK;
         else if (strcmp(value, "transparent") == 0) config->route_mode = AIRLINK_ROUTE_TRANSPARENT;
         else value_ok = false;
+    } else if (KEY_IS("fc_transport")) {
+        if (strcmp(value, "uart") == 0) config->fc_transport = AIRLINK_FC_TRANSPORT_UART;
+        else if (strcmp(value, "dronecan") == 0) {
+            config->fc_transport = AIRLINK_FC_TRANSPORT_DRONECAN;
+            config->route_mode = AIRLINK_ROUTE_MAVLINK;
+        } else value_ok = false;
     } else if (KEY_IS("uart_baud")) {
         value_ok = parse_u32(value, &number);
         if (value_ok) config->uart_baud = number;
@@ -412,6 +451,15 @@ static bool config_apply_value(airlink_config_t *config, const char *arguments,
     } else if (KEY_IS("can_bitrate")) {
         value_ok = parse_u32(value, &number);
         if (value_ok) config->can_bitrate = number;
+    } else if (KEY_IS("can_node_id")) {
+        value_ok = parse_u32(value, &number) && number <= UINT8_MAX;
+        if (value_ok) config->can_node_id = (uint8_t)number;
+    } else if (KEY_IS("can_remote_node_id")) {
+        value_ok = parse_u32(value, &number) && number <= UINT8_MAX;
+        if (value_ok) config->can_remote_node_id = (uint8_t)number;
+    } else if (KEY_IS("can_serial_id")) {
+        value_ok = parse_u32(value, &number) && number <= INT8_MAX;
+        if (value_ok) config->can_serial_id = (int8_t)number;
     } else if (KEY_IS("led_brightness")) {
         value_ok = parse_u32(value, &number) && number <= UINT8_MAX;
         if (value_ok) config->led_brightness = (uint8_t)number;

@@ -31,6 +31,10 @@ typedef struct {
      * existing CRC-protected records remain binary-compatible. */
     bool bridge_enabled;
     airlink_bridge_role_t bridge_role;
+    airlink_fc_transport_t fc_transport;
+    uint8_t can_node_id;
+    uint8_t can_remote_node_id;
+    int8_t can_serial_id;
 } airlink_config_t;
 
 typedef struct {

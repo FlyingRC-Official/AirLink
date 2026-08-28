@@ -1,8 +1,8 @@
-name: release-v0.3.2-dev
+name: release-v0.3.3-dev
 
 on:
   push:
-    tags: [v0.3.2-dev]
+    tags: [v0.3.3-dev]
 
 permissions:
   contents: write
@@ -54,18 +54,18 @@ jobs:
           # compares them with GitHub Release digests. Compile above as a source
           # verification, but package the exact bench-qualified bytes committed
           # before tagging so build timestamps cannot change their SHA-256.
-          locked=tools/usb_flasher/public/firmware/v0.3.2-dev
+          locked=tools/usb_flasher/public/firmware/v0.3.3-dev
           mkdir -p build-locked/bootloader build-locked/partition_table
           cp "$locked/airlink.bin" build-locked/airlink.bin
           cp "$locked/bootloader.bin" build-locked/bootloader/bootloader.bin
           cp "$locked/partition-table.bin" build-locked/partition_table/partition-table.bin
           cp "$locked/ota_data_initial.bin" build-locked/ota_data_initial.bin
           cp build-release/flash_args build-locked/flash_args
-          package=$(tools/create_release.sh build-locked 0.3.2-dev)
+          package=$(tools/create_release.sh build-locked 0.3.3-dev)
           # Lock the merged image too. Different esptool patch releases should
           # never make the published bytes diverge from the bench-qualified
           # manifest committed at the tag.
-          cp "$locked/airlink-0.3.2-dev-merged.bin" "$package/airlink-0.3.2-dev-merged.bin"
+          cp "$locked/airlink-0.3.3-dev-merged.bin" "$package/airlink-0.3.3-dev-merged.bin"
           cp "$locked/manifest.json" "$package/manifest.json"
           cp "$locked/SHA256SUMS.txt" "$package/SHA256SUMS.txt"
           python3 - "$package" <<'PY'
@@ -78,13 +78,13 @@ jobs:
                   raise SystemExit(f"locked release hash mismatch: {name}: {actual} != {expected}")
           PY
           cd "$package"
-          zip -qr "../AirLink-Firmware-v0.3.2-dev.zip" .
+          zip -qr "../AirLink-Firmware-v0.3.3-dev.zip" .
       - uses: actions/upload-artifact@v4
         with:
           name: release-firmware
           path: |
-            dist/AirLink-Firmware-v0.3.2-dev.zip
-            dist/airlink-0.3.2-dev/*
+            dist/AirLink-Firmware-v0.3.3-dev.zip
+            dist/airlink-0.3.3-dev/*
 
   web-tools:
     needs: quality-gate
@@ -102,22 +102,22 @@ jobs:
           npm ci
           npm run build
           npm test
-          mkdir -p ../../dist/AirLink-USB-Flasher-v0.3.2-dev
-          cp www/AirLink-Flasher-v0.3.2-dev.html README.md THIRD_PARTY_NOTICES.md start_flasher.bat start_flasher.command ../../dist/AirLink-USB-Flasher-v0.3.2-dev/
+          mkdir -p ../../dist/AirLink-USB-Flasher-v0.3.3-dev
+          cp www/AirLink-Flasher-v0.3.3-dev.html README.md THIRD_PARTY_NOTICES.md start_flasher.bat start_flasher.command ../../dist/AirLink-USB-Flasher-v0.3.3-dev/
           cd ../../dist
-          zip -qr AirLink-USB-Flasher-v0.3.2-dev.zip AirLink-USB-Flasher-v0.3.2-dev
-          cp AirLink-USB-Flasher-v0.3.2-dev/AirLink-Flasher-v0.3.2-dev.html .
+          zip -qr AirLink-USB-Flasher-v0.3.3-dev.zip AirLink-USB-Flasher-v0.3.3-dev
+          cp AirLink-USB-Flasher-v0.3.3-dev/AirLink-Flasher-v0.3.3-dev.html .
           cd ../tools/configurator
           npm run build
           npm test
-          cp AirLink-Configurator.html ../../dist/AirLink-Configurator-v0.3.2-dev.html
+          cp AirLink-Configurator.html ../../dist/AirLink-Configurator-v0.3.3-dev.html
       - uses: actions/upload-artifact@v4
         with:
           name: release-web-tools
           path: |
-            dist/AirLink-Flasher-v0.3.2-dev.html
-            dist/AirLink-USB-Flasher-v0.3.2-dev.zip
-            dist/AirLink-Configurator-v0.3.2-dev.html
+            dist/AirLink-Flasher-v0.3.3-dev.html
+            dist/AirLink-USB-Flasher-v0.3.3-dev.zip
+            dist/AirLink-Configurator-v0.3.3-dev.html
 
   helper:
     needs: quality-gate
@@ -126,9 +126,9 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact: AirLink-Configurator-Helper-Windows-x64-v0.3.2-dev.zip
+            artifact: AirLink-Configurator-Helper-Windows-x64-v0.3.3-dev.zip
           - os: macos-latest
-            artifact: AirLink-Configurator-Helper-macOS-Universal-v0.3.2-dev.zip
+            artifact: AirLink-Configurator-Helper-macOS-Universal-v0.3.3-dev.zip
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -152,7 +152,7 @@ jobs:
           go build -C helper -trimpath -o ../AirLink-Configurator-Helper.exe .
           New-Item -ItemType Directory bundle | Out-Null
           Copy-Item AirLink-Configurator-Helper.exe,AirLink-Configurator.html,start_configurator.bat,README.md bundle/
-          Compress-Archive bundle/* ../../AirLink-Configurator-Helper-Windows-x64-v0.3.2-dev.zip
+          Compress-Archive bundle/* ../../AirLink-Configurator-Helper-Windows-x64-v0.3.3-dev.zip
       - name: Package macOS Universal
         if: runner.os == 'macOS'
         working-directory: tools/configurator
@@ -163,7 +163,7 @@ jobs:
           mkdir bundle
           cp AirLink-Configurator-Helper AirLink-Configurator.html start_configurator.command README.md bundle/
           chmod +x bundle/AirLink-Configurator-Helper bundle/start_configurator.command
-          ditto -c -k --sequesterRsrc --keepParent bundle ../../AirLink-Configurator-Helper-macOS-Universal-v0.3.2-dev.zip
+          ditto -c -k --sequesterRsrc --keepParent bundle ../../AirLink-Configurator-Helper-macOS-Universal-v0.3.3-dev.zip
       - uses: actions/upload-artifact@v4
         with:
           name: helper-${{ runner.os }}
@@ -184,6 +184,6 @@ jobs:
         run: |
           find release-assets -type f -maxdepth 2 -print
           mapfile -d '' assets < <(find release-assets -type f -print0)
-          gh release create v0.3.2-dev "${assets[@]}" \
-            --verify-tag --prerelease --target master --title "AirLink V0.3.2-DEV" \
-            --notes-file docs/RELEASE_NOTES_v0.3.2-dev.md
+          gh release create v0.3.3-dev "${assets[@]}" \
+            --verify-tag --prerelease --target master --title "AirLink V0.3.3-DEV" \
+            --notes-file docs/RELEASE_NOTES_v0.3.3-dev.md

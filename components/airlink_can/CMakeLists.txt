@@ -1,19 +1,16 @@
-idf_component_register(SRCS "airlink_can.c" INCLUDE_DIRS "include"
-    REQUIRES airlink_board airlink_led esp_driver_twai esp_timer esp_system freertos)
+idf_component_register(
+    SRCS "airlink_can.c"
+         "airlink_dronecan.c"
+         "dsdl_generated/src/uavcan.protocol.NodeStatus.c"
+         "dsdl_generated/src/uavcan.protocol.GetNodeInfo_res.c"
+         "dsdl_generated/src/uavcan.tunnel.Targetted.c"
+    INCLUDE_DIRS "include" "dsdl_generated/include"
+    REQUIRES airlink_board airlink_led airlink_router esp_app_format esp_driver_twai esp_timer esp_system freertos)
 
-include(FetchContent)
-if(POLICY CMP0169)
-    cmake_policy(SET CMP0169 OLD)
-endif()
-FetchContent_Declare(airlink_libcanard_source
-    GIT_REPOSITORY https://github.com/DroneCAN/libcanard.git
-    GIT_TAG 601ed35467e0ac38819df17cd7c918de19f62d58
-    GIT_SHALLOW FALSE)
-FetchContent_GetProperties(airlink_libcanard_source)
-if(NOT airlink_libcanard_source_POPULATED)
-    FetchContent_Populate(airlink_libcanard_source)
-endif()
-add_library(airlink_libcanard STATIC "${airlink_libcanard_source_SOURCE_DIR}/canard.c")
-target_include_directories(airlink_libcanard PUBLIC "${airlink_libcanard_source_SOURCE_DIR}")
+# Vendored from DroneCAN/libcanard commit
+# 601ed35467e0ac38819df17cd7c918de19f62d58. Keeping the three-file library
+# local makes tagged firmware builds reproducible without a network fetch.
+add_library(airlink_libcanard STATIC "${CMAKE_CURRENT_LIST_DIR}/libcanard/canard.c")
+target_include_directories(airlink_libcanard PUBLIC "${CMAKE_CURRENT_LIST_DIR}/libcanard")
 target_compile_definitions(airlink_libcanard PUBLIC CANARD_ENABLE_CANFD=0 CANARD_MULTI_IFACE=0)
 target_link_libraries(${COMPONENT_LIB} PUBLIC airlink_libcanard)

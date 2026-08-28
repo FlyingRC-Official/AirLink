@@ -1,9 +1,9 @@
 # FlyingRC AirLink C5 Mesh V1
 
 AirLink is an ESP32-C5 telemetry gateway for ArduPilot-compatible flight
-controllers. The first release routes MAVLink 1/2 between the flight-controller
-UART and Wi-Fi UDP/TCP clients, with a web configuration UI, USB recovery,
-rollback-capable OTA and passive DroneCAN diagnostics.
+controllers. It routes MAVLink 1/2 between a flight-controller UART or standard
+DroneCAN serial tunnel and Wi-Fi UDP/TCP clients, with a web configuration UI,
+USB recovery, rollback-capable OTA and active DroneCAN diagnostics.
 The bilingual single-file UI is deterministically gzip-compressed and embedded
 in the application image.
 
@@ -12,11 +12,12 @@ in the application image.
 ```mermaid
 flowchart LR
     FC["Flight controller UART"] <--> Router["MAVLink router"]
+    FCCAN["Flight controller DroneCAN"] <--> Router
     Router <--> UDP["Wi-Fi UDP 14550"]
     Router <--> TCP["Wi-Fi TCP 5760"]
     Router <--> USB["USB MAVLink mode"]
     Air["Air role: UART + AP"] <--> Ground["Ground role: STA + USB"]
-    CAN["CAN / DroneCAN"] --> Diagnostics["Status and diagnostics"]
+    CAN["DroneCAN node/service"] --> Diagnostics["Status and diagnostics"]
     Router --> Diagnostics
     Diagnostics --> Web["Web UI / API"]
     Web --> Config["NVS configuration"]
@@ -28,6 +29,9 @@ flowchart LR
 - Routes MAVLink 1/2 between the flight-controller UART and Wi-Fi or optional
   USB ground-station endpoints. MAVLink-aware and transparent routing modes are
   available.
+- Alternatively routes MAVLink bytes through standard
+  `uavcan.tunnel.Targetted` as static DroneCAN node `com.flyingrc.airlink`,
+  with UART kept disabled in this mode to prevent duplicate command paths.
 - Validates known MAVLink message CRCs, preserves structurally valid custom
   dialect messages, suppresses short-term network reinjection loops and gives
   control/command traffic a dedicated high-priority UART queue.
@@ -42,9 +46,10 @@ flowchart LR
   The factory serial number and initial password use a separate identity
   partition. Blank devices can consume a CRC-protected one-time password record
   written by the cross-platform USB flasher; the record is erased after first use.
-- Passively monitors DroneCAN `NodeStatus`, TWAI error counters and bus-off
-  recovery. CAN transmission and bitrate switching are enabled only in the
-  factory-test build.
+- Publishes DroneCAN `NodeStatus`, responds to `GetNodeInfo`, tunnels MAVLink2
+  with 120-byte chunks and keepalives, and reports peer, queue and TWAI error
+  state. Passive observation and bus-off recovery remain available in UART
+  mode; raw CAN transmission and bitrate switching remain factory-test-only.
 - Provides rollback-capable A/B OTA with hardware, image, project-name and
   SHA-256 checks. A new image is confirmed only after a 30-second healthy
   service window.
@@ -112,11 +117,11 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ### Local USB flasher
 
-The `v0.3.2-dev` release includes a single-file local Web Serial flasher for
-Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.2-dev.zip`, then run
+The `v0.3.3-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.3-dev.zip`, then run
 `start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
 Edge is required; Safari is not supported. The page downloads only the fixed
-`v0.3.2-dev` firmware from the matching GitHub tag and accepts it only when the
+`v0.3.3-dev` firmware from the matching GitHub tag and accepts it only when the
 manifest SHA-256 and GitHub Release digest both match.
 
 The flasher never performs a whole-chip erase and never writes normal NVS or

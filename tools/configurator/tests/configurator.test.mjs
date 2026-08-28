@@ -8,11 +8,13 @@ import { configDiff, configToCliOperations, createProfile, evaluateLink, parseCl
 const root = new URL("../", import.meta.url);
 
 test("parses firmware config show output", () => {
-  const parsed = parseCliConfig("OK config generation=7\r\nroute_mode=mavlink\r\nuart_baud=115200\r\nwifi_mode=apsta\r\nwifi_band=2g\r\nap_ssid=FlyingRC-AirLink-1234\r\nusb_mode=log\r\nbridge_role=off\r\n> ");
+  const parsed = parseCliConfig("OK config generation=7\r\nroute_mode=mavlink\r\nfc_transport=dronecan\r\nuart_baud=115200\r\nwifi_mode=apsta\r\nwifi_band=2g\r\nap_ssid=FlyingRC-AirLink-1234\r\nusb_mode=log\r\nbridge_role=off\r\ncan_node_id=125\r\ncan_remote_node_id=10\r\ncan_serial_id=0\r\n> ");
   assert.equal(parsed.generation, 7);
   assert.equal(parsed.route_mode, 0);
+  assert.equal(parsed.fc_transport, 1);
   assert.equal(parsed.wifi_mode, 2);
   assert.equal(parsed.uart_baud, 115200);
+  assert.equal(parsed.can_node_id, 125);
 });
 
 test("orders USB role transitions safely", () => {
@@ -40,7 +42,7 @@ test("renders a secret-safe change preview with connection risks", () => {
 });
 
 test("profiles omit secrets and reject unknown schemas", () => {
-  const profile = createProfile({ ap_ssid: "AIR", ap_password: "secret-secret", admin_password: "admin-secret", generation: 3, udp_port: 14550 }, { firmware: "v0.3.2-dev" });
+  const profile = createProfile({ ap_ssid: "AIR", ap_password: "secret-secret", admin_password: "admin-secret", generation: 3, udp_port: 14550 }, { firmware: "v0.3.3-dev" });
   assert.equal(profile.schema, "airlink-config-profile/v1");
   assert.equal(profile.config.ap_password, undefined);
   assert.equal(profile.config.admin_password, undefined);
@@ -67,6 +69,25 @@ test("validates passwords, ports and USB character set", () => {
   assert.ok(errors.some((item) => item.includes("AP 新密码")));
   assert.ok(errors.some((item) => item.includes("UDP")));
   assert.ok(errors.some((item) => item.includes("ASCII")));
+});
+
+test("validates DroneCAN routing and node identity", () => {
+  const base = { ap_ssid: "AIR", sta_ssid: "", wifi_mode: 0, ap_password: "", sta_password: "", admin_password: "", udp_port: 14550, tcp_port: 5760, fc_transport: 1, route_mode: 1, can_node_id: 125, can_remote_node_id: 125, can_serial_id: 16 };
+  const errors = validateConfig(base, "wifi");
+  assert.ok(errors.some((item) => item.includes("只支持 MAVLink")));
+  assert.ok(errors.some((item) => item.includes("不能相同")));
+  assert.ok(errors.some((item) => item.includes("0–15")));
+  assert.deepEqual(validateConfig({ ...base, route_mode: 0, can_remote_node_id: 10, can_serial_id: 0 }, "wifi"), []);
+});
+
+test("uses DroneCAN counters for passive link diagnostics", () => {
+  const checks = evaluateLink(
+    { can: { tunnel_rx_bytes: 5, high_queue_drops: 0, normal_queue_drops: 0 }, wifi: { reconnects_total: 0 } },
+    { fc_seen: true, can: { tunnel_rx_bytes: 125, high_queue_drops: 0, normal_queue_drops: 1 }, wifi: { reconnects_total: 0 } },
+    { fc_transport: 1, bridge_role: 0 },
+  );
+  assert.equal(checks.find((item) => item.id === "vehicle").state, "pass");
+  assert.equal(checks.find((item) => item.id === "queues").state, "fail");
 });
 
 test("does not persist passwords in browser storage", async () => {
@@ -98,7 +119,7 @@ test("builds a portable single-file configurator", async () => {
   assert.match(bundle, /airlink-config-profile\/v1/);
   assert.match(bundle, /helper\/v1\/devices/);
   assert.match(bundle, /wifi_scan|wifiScan/);
-  assert.match(bundle, /V0\.3\.2-DEV/);
+  assert.match(bundle, /V0\.3\.3-DEV/);
   assert.match(bundle, /Update from GitHub/);
   assert.match(bundle, /Export redacted report/);
   assert.match(bundle, /Confirm changes before saving/);

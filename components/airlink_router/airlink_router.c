@@ -100,7 +100,8 @@ static bool duplicate_network_frame(const uint8_t *data, size_t length)
 
 static bool vehicle_side(airlink_endpoint_type_t type)
 {
-    return type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_BRIDGE;
+    return type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_CAN ||
+           type == AIRLINK_ENDPOINT_BRIDGE;
 }
 
 static uint32_t add_u32_saturated(uint32_t value, uint32_t increment)

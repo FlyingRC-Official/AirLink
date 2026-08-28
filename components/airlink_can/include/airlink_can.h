@@ -15,9 +15,28 @@ typedef struct {
     uint16_t tx_error_count;
     uint16_t rx_error_count;
     uint8_t dronecan_nodes;
+    uint64_t tunnel_rx_bytes;
+    uint64_t tunnel_tx_bytes;
+    uint32_t tunnel_rx_transfers;
+    uint32_t tunnel_tx_transfers;
+    uint32_t tunnel_drops;
+    uint32_t high_queue_drops;
+    uint32_t normal_queue_drops;
+    uint32_t keepalives;
+    bool peer_online;
 } airlink_can_status_t;
 
-esp_err_t airlink_can_start(uint32_t bitrate, bool factory_mode);
+typedef struct {
+    uint32_t bitrate;
+    uint32_t virtual_baud;
+    uint8_t local_node_id;
+    uint8_t remote_node_id;
+    int8_t serial_id;
+    bool tunnel_enabled;
+    bool factory_mode;
+} airlink_can_options_t;
+
+esp_err_t airlink_can_start(const airlink_can_options_t *options);
 esp_err_t airlink_can_factory_transmit(uint32_t id, bool extended,
                                        const uint8_t *data, size_t length);
 esp_err_t airlink_can_factory_set_bitrate(uint32_t bitrate);

@@ -1,7 +1,32 @@
 # Changelog
 
+## 0.3.3-dev - 2026-08-28
+
+- Added bidirectional MAVLink byte tunneling over standard
+  `uavcan.tunnel.Targetted`, with 120-byte fragmentation, MAVLink2 metadata,
+  500 ms keepalives and independent non-blocking priority queues.
+- Added a configurable static DroneCAN node with 1 Hz NodeStatus,
+  GetNodeInfo response (`com.flyingrc.airlink`), source/target/serial filtering,
+  peer state and tunnel traffic/drop diagnostics.
+- Added `fc_transport` selection so the flight-controller endpoint is either
+  UART or DroneCAN, preserving MAVLink heartbeat and armed-state safety
+  interlocks without duplicate command paths.
+- Upgraded the persisted configuration schema to v2 with atomic migration of
+  valid v1 A/B records; upgrades and factory defaults remain on UART.
+- Added Web, USB CLI and standalone configurator controls for local/remote CAN
+  node IDs and virtual serial ID, plus host tests for DroneCAN DSDL vectors,
+  multi-frame CRC/transfer IDs, filtering, fragmentation and keepalives.
+- Vendored libcanard at commit
+  `601ed35467e0ac38819df17cd7c918de19f62d58` and generated types from the
+  standard DroneCAN DSDL so release builds are reproducible without downloads.
+- Included the GPIO8 CAN SILENT fix: firmware drives the externally pulled-up
+  transceiver input low before starting TWAI.
+
 ## 0.3.2-dev - 2026-08-25
 
+- Drive the externally pulled-up CAN transceiver SILENT input on GPIO8 low
+  during board initialization; physical DroneCAN reception now starts in
+  normal mode instead of leaving the transceiver silent.
 - Fixed ESP32-C5 ECO2 browser flashing by bundling Espressif's v2 C5 stub,
   selecting the SPIMEM1 register base at `0x60003000`, retrying JEDEC reads and
   refusing invalid IDs instead of silently treating them as 4 MB.

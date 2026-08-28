@@ -13,7 +13,7 @@
       <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="brand-copy">
         <strong>FLYINGRC</strong>
-        <span>AIRLINK CONFIGURATOR · V0.3.2-DEV</span>
+        <span>AIRLINK CONFIGURATOR · V0.3.3-DEV</span>
       </div>
       <button class="header-button" id="languageButton" type="button" aria-label="Switch language">EN</button>
       <div class="connection-pill offline" id="connectionPill"><i></i><span>未连接</span></div>
@@ -90,7 +90,7 @@
                 <div class="config-title"><span>01</span><div><h3>工作角色</h3><p>选择模块在链路中的用途</p></div></div>
                 <div class="role-grid">
                   <label class="role-card"><input type="radio" name="bridge_role" value="0" checked /><span class="role-radio"></span><strong>网关</strong><small>UART ↔ Wi‑Fi / USB</small></label>
-                  <label class="role-card"><input type="radio" name="bridge_role" value="1" /><span class="role-radio"></span><strong>空中端</strong><small>连接飞控，创建热点</small></label>
+                  <label class="role-card"><input type="radio" name="bridge_role" value="1" /><span class="role-radio"></span><strong>空中端</strong><small>通过 UART/CAN 连接飞控，创建热点</small></label>
                   <label class="role-card"><input type="radio" name="bridge_role" value="2" /><span class="role-radio"></span><strong>地面端</strong><small>连接热点，USB 输出</small></label>
                 </div>
                 <p class="inline-note" id="roleHint">网关模式可独立设置 Wi‑Fi 与 USB 工作方式。</p>
@@ -100,6 +100,7 @@
                 <div class="config-title"><span>02</span><div><h3>遥测链路</h3><p>MAVLink 路由与飞控串口</p></div></div>
                 <div class="form-grid">
                   <label>路由模式<select id="routeMode"><option value="0">MAVLink（推荐）</option><option value="1">透明传输</option></select></label>
+                  <label>飞控接口<select id="fcTransport"><option value="0">UART</option><option value="1">DroneCAN 隧道</option></select></label>
                   <label>UART 波特率<select id="uartBaud"><option>57600</option><option>115200</option><option>230400</option><option>460800</option><option>921600</option></select></label>
                   <label>UDP 端口<input id="udpPort" type="number" min="1" max="65535" /></label>
                   <label>TCP 端口<input id="tcpPort" type="number" min="1" max="65535" /></label>
@@ -124,6 +125,9 @@
                 <div class="form-grid">
                   <label>USB 模式<select id="usbMode"><option value="0">日志 / 配置 CLI</option><option value="1">MAVLink</option></select></label>
                   <label>CAN 速率<select id="canBitrate"><option value="125000">125 kbit/s</option><option value="250000">250 kbit/s</option><option value="500000">500 kbit/s</option><option value="1000000">1 Mbit/s</option></select></label>
+                  <label>AirLink CAN 节点<input id="canNodeId" type="number" min="1" max="127" /></label>
+                  <label>飞控 CAN 节点<input id="canRemoteNodeId" type="number" min="1" max="127" /></label>
+                  <label>虚拟串口 ID<input id="canSerialId" type="number" min="0" max="15" /></label>
                   <label class="range-field">LED 亮度 <output id="brightnessOutput">25%</output><input id="ledBrightness" type="range" min="0" max="100" value="25" /></label>
                   <label id="adminPasswordLabel">管理员新密码<div class="password-field"><input id="adminPassword" type="password" minlength="12" maxlength="63" placeholder="仅 USB 可修改" /><button type="button" data-toggle-password="adminPassword">显示</button></div></label>
                 </div>

@@ -113,15 +113,25 @@ void app_main(void)
      * service alive. Telemetry UART/CAN endpoints never start in recovery. */
     const bool ground_bridge = snapshot.value.bridge_enabled &&
                                snapshot.value.bridge_role == AIRLINK_BRIDGE_GROUND;
-    s_services.uart_required = hardware_ok && !recovery && !ground_bridge;
+    const bool can_fc = snapshot.value.fc_transport == AIRLINK_FC_TRANSPORT_DRONECAN;
+    s_services.uart_required = hardware_ok && !recovery && !ground_bridge && !can_fc;
     if (s_services.uart_required) {
         s_services.uart_started = service_started("flight-controller UART",
                                                    airlink_uart_start(snapshot.value.uart_baud));
     }
     s_services.can_required = hardware_ok && !recovery;
     if (s_services.can_required) {
+        const airlink_can_options_t can_options = {
+            .bitrate = snapshot.value.can_bitrate,
+            .virtual_baud = snapshot.value.uart_baud,
+            .local_node_id = snapshot.value.can_node_id,
+            .remote_node_id = snapshot.value.can_remote_node_id,
+            .serial_id = snapshot.value.can_serial_id,
+            .tunnel_enabled = can_fc && !ground_bridge,
+            .factory_mode = factory_test,
+        };
         s_services.can_started = service_started("CAN",
-                                                  airlink_can_start(snapshot.value.can_bitrate, factory_test));
+                                                  airlink_can_start(&can_options));
     }
     (void)airlink_diag_mark_boot_stage("io-ready");
     s_services.wifi_started = service_started("Wi-Fi", airlink_wifi_start(&snapshot.value));

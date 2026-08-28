@@ -5,8 +5,8 @@ const $ = (id) => document.getElementById(id);
 const ui = [
   "connectionPill", "disconnectButton", "wifiTab", "usbTab", "wifiPanel", "usbPanel", "wifiAddress", "wifiUser", "wifiPassword",
   "wifiConnectButton", "usbConnectButton", "usbSupportNote", "refreshButton", "statusEmpty", "statusGrid", "statusFirmware", "statusFlight",
-  "statusWifi", "statusClients", "statusUptime", "statusGeneration", "configForm", "routeMode", "uartBaud", "udpPort", "tcpPort", "wifiMode",
-  "wifiBand", "apSsid", "apPassword", "staSsid", "staPassword", "usbMode", "canBitrate", "ledBrightness", "brightnessOutput",
+  "statusWifi", "statusClients", "statusUptime", "statusGeneration", "configForm", "routeMode", "fcTransport", "uartBaud", "udpPort", "tcpPort", "wifiMode",
+  "wifiBand", "apSsid", "apPassword", "staSsid", "staPassword", "usbMode", "canBitrate", "canNodeId", "canRemoteNodeId", "canSerialId", "ledBrightness", "brightnessOutput",
   "adminPassword", "adminPasswordLabel", "roleHint", "unsavedBadge", "saveState", "saveDetail", "factoryResetButton", "saveButton",
   "saveRebootButton", "copyLogButton", "clearLogButton", "logOutput", "toast", "languageButton", "discoverButton", "discoveredDevices",
   "wifiScanButton", "exportProfileButton", "importProfileButton", "batchApplyButton", "profileFile", "batchResult", "diagnosticsButton",
@@ -42,9 +42,9 @@ const translations = {
     scan: "扫描", show: "显示", address: "模块地址", user: "用户名", adminPassword: "管理密码", unsaved: "有未保存更改",
     selectDevice: "选择发现的模块", pairSsid: "配对 SSID", pairPassword: "配对密码（至少 12 位）",
     sections: ["工作角色", "遥测链路", "无线网络", "设备接口"], sectionCopies: ["选择模块在链路中的用途", "MAVLink 路由与飞控串口", "热点与上游网络设置", "USB、CAN 与指示灯"],
-    roles: ["网关", "空中端", "地面端"], roleCopies: ["UART ↔ Wi‑Fi / USB", "连接飞控，创建热点", "连接热点，USB 输出"],
-    fields: ["路由模式", "UART 波特率", "UDP 端口", "TCP 端口", "Wi‑Fi 模式", "频段", "AP 名称", "AP 新密码", "STA 名称", "STA 新密码", "USB 模式", "CAN 速率", "LED 亮度", "管理员新密码"],
-    fieldHelp: ["推荐 MAVLink；透明模式按字节流转发。", "必须与飞控串口一致。", "改变后地面站需改用新端口。", "改变后 TCP 客户端需重连。", "切换可能断开当前 Wi‑Fi。", "AP+STA 必须共用频段和信道。", "修改后热点会断开。", "留空保持现有密码；不会写入日志或模板。", "STA/AP+STA 使用的上游网络。", "留空保持现有密码。", "切换后 USB 用途改变并需重启。", "必须与 CAN 总线一致；默认 1 Mbit/s。", "推荐 25%，0% 关闭 RGB 指示。", "仅 USB 连接可修改；留空保持不变。"],
+    roles: ["网关", "空中端", "地面端"], roleCopies: ["UART/CAN ↔ Wi‑Fi / USB", "通过 UART/CAN 连接飞控，创建热点", "连接热点，USB 输出"],
+    fields: ["路由模式", "飞控接口", "UART / 虚拟波特率", "UDP 端口", "TCP 端口", "Wi‑Fi 模式", "频段", "AP 名称", "AP 新密码", "STA 名称", "STA 新密码", "USB 模式", "CAN 速率", "AirLink CAN 节点", "飞控 CAN 节点", "虚拟串口 ID", "LED 亮度", "管理员新密码"],
+    fieldHelp: ["推荐 MAVLink；透明模式按字节流转发。", "UART 或标准 DroneCAN Targetted 隧道。", "UART 实际波特率，或 CAN 虚拟串口元数据。", "改变后地面站需改用新端口。", "改变后 TCP 客户端需重连。", "切换可能断开当前 Wi‑Fi。", "AP+STA 必须共用频段和信道。", "修改后热点会断开。", "留空保持现有密码；不会写入日志或模板。", "STA/AP+STA 使用的上游网络。", "留空保持现有密码。", "切换后 USB 用途改变并需重启。", "必须与 CAN 总线一致；默认 1 Mbit/s。", "本机静态节点，范围 1–127。", "飞控静态节点，不能与本机相同。", "对应 ArduPilot S1_IDX，范围 0–15。", "推荐 25%，0% 关闭 RGB 指示。", "仅 USB 连接可修改；留空保持不变。"],
     toolCopies: ["模板默认不包含任何密码。使用本地助手发现多台模块后可逐台应用。", "执行被动 5 秒采样，不发送飞控命令或 CAN 数据。", "先连接并配置空中端，再用同一 SSID、密码和频段配置地面端。", "可直接读取固定 GitHub Prerelease，或选择本地 manifest 与 airlink.bin；上传前校验硬件、版本和 SHA-256。"],
   },
   en: {
@@ -59,9 +59,9 @@ const translations = {
     scan: "Scan", show: "Show", address: "Module address", user: "Username", adminPassword: "Admin password", unsaved: "Unsaved changes",
     selectDevice: "Select a discovered module", pairSsid: "Pairing SSID", pairPassword: "Pairing password (12+ characters)",
     sections: ["Operating role", "Telemetry link", "Wireless network", "Device interfaces"], sectionCopies: ["Choose this module's purpose in the link", "MAVLink routing and flight-controller UART", "Access-point and upstream-network settings", "USB, CAN and indicator LED"],
-    roles: ["Gateway", "Air unit", "Ground unit"], roleCopies: ["UART ↔ Wi‑Fi / USB", "Connects to the flight controller and creates an AP", "Connects to the AP and outputs over USB"],
-    fields: ["Route mode", "UART baud rate", "UDP port", "TCP port", "Wi‑Fi mode", "Band", "AP name", "New AP password", "STA name", "New STA password", "USB mode", "CAN bitrate", "LED brightness", "New admin password"],
-    fieldHelp: ["MAVLink is recommended; transparent mode forwards a byte stream.", "Must match the flight-controller UART.", "The ground station must use the new port after restart.", "TCP clients reconnect after the port changes.", "Changing mode can disconnect the current Wi‑Fi session.", "AP+STA must share one band and channel.", "Changing this disconnects the current access point.", "Leave blank to preserve it; secrets never enter logs or profiles.", "Upstream network used by STA/AP+STA.", "Leave blank to preserve the existing password.", "Changes USB behavior and requires a restart.", "Must match the bus; 1 Mbit/s is recommended.", "25% is recommended; 0% disables the RGB indicator.", "USB-only; leave blank to preserve it."],
+    roles: ["Gateway", "Air unit", "Ground unit"], roleCopies: ["UART/CAN ↔ Wi‑Fi / USB", "Connects to the flight controller over UART/CAN and creates an AP", "Connects to the AP and outputs over USB"],
+    fields: ["Route mode", "Flight-controller interface", "UART / virtual baud", "UDP port", "TCP port", "Wi-Fi mode", "Band", "AP name", "New AP password", "STA name", "New STA password", "USB mode", "CAN bitrate", "AirLink CAN node", "Flight-controller CAN node", "Virtual serial ID", "LED brightness", "New admin password"],
+    fieldHelp: ["MAVLink is recommended; transparent mode forwards a byte stream.", "UART or the standard DroneCAN Targetted tunnel.", "Physical UART baud or CAN virtual-port metadata.", "The ground station must use the new port after restart.", "TCP clients reconnect after the port changes.", "Changing mode can disconnect the current Wi-Fi session.", "AP+STA must share one band and channel.", "Changing this disconnects the current access point.", "Leave blank to preserve it; secrets never enter logs or profiles.", "Upstream network used by STA/AP+STA.", "Leave blank to preserve the existing password.", "Changes USB behavior and requires a restart.", "Must match the bus; 1 Mbit/s is recommended.", "Local static node, 1–127.", "Flight-controller node; must differ from local.", "Matches ArduPilot S1_IDX, 0–15.", "25% is recommended; 0% disables the RGB indicator.", "USB-only; leave blank to preserve it."],
     toolCopies: ["Profiles omit all passwords by default. With the native helper, apply one profile to discovered modules in sequence.", "Runs a passive five-second sample without sending flight-controller commands or CAN frames.", "Configure the air unit first, then reuse its SSID, password and band on the ground unit.", "Use the pinned GitHub Prerelease or local manifest and airlink.bin; hardware, version and SHA-256 are checked before upload."],
   },
 };
@@ -131,22 +131,25 @@ function selectTransport(type) {
 
 function formConfig() {
   return {
-    route_mode: Number(ui.routeMode.value), uart_baud: Number(ui.uartBaud.value), wifi_mode: Number(ui.wifiMode.value), wifi_band: Number(ui.wifiBand.value),
+    route_mode: Number(ui.routeMode.value), fc_transport: Number(ui.fcTransport.value), uart_baud: Number(ui.uartBaud.value), wifi_mode: Number(ui.wifiMode.value), wifi_band: Number(ui.wifiBand.value),
     ap_ssid: ui.apSsid.value.trim(), ap_password: ui.apPassword.value, sta_ssid: ui.staSsid.value.trim(), sta_password: ui.staPassword.value,
     udp_port: Number(ui.udpPort.value), tcp_port: Number(ui.tcpPort.value), usb_mode: Number(ui.usbMode.value),
     bridge_role: Number(document.querySelector('input[name="bridge_role"]:checked').value), can_bitrate: Number(ui.canBitrate.value),
+    can_node_id: Number(ui.canNodeId.value), can_remote_node_id: Number(ui.canRemoteNodeId.value), can_serial_id: Number(ui.canSerialId.value),
     led_brightness: Number(ui.ledBrightness.value), admin_password: ui.adminPassword.value,
   };
 }
 
 function applyConfig(config) {
   currentConfig = { ...config };
-  ui.routeMode.value = config.route_mode ?? 0; ui.uartBaud.value = config.uart_baud ?? 115200;
+  ui.routeMode.value = config.route_mode ?? 0; ui.fcTransport.value = config.fc_transport ?? 0; ui.uartBaud.value = config.uart_baud ?? 115200;
   ui.wifiMode.value = config.wifi_mode ?? 0; ui.wifiBand.value = config.wifi_band ?? 0;
   ui.apSsid.value = config.ap_ssid || ""; ui.apPassword.value = transport?.type === "usb" ? config.ap_password || "" : "";
   ui.staSsid.value = config.sta_ssid || ""; ui.staPassword.value = transport?.type === "usb" ? config.sta_password || "" : "";
   ui.udpPort.value = config.udp_port ?? 14550; ui.tcpPort.value = config.tcp_port ?? 5760; ui.usbMode.value = config.usb_mode ?? 0;
-  ui.canBitrate.value = config.can_bitrate ?? 1000000; ui.ledBrightness.value = config.led_brightness ?? 25; ui.brightnessOutput.value = `${ui.ledBrightness.value}%`;
+  ui.canBitrate.value = config.can_bitrate ?? 1000000; ui.canNodeId.value = config.can_node_id ?? 125;
+  ui.canRemoteNodeId.value = config.can_remote_node_id ?? 10; ui.canSerialId.value = config.can_serial_id ?? 0;
+  ui.ledBrightness.value = config.led_brightness ?? 25; ui.brightnessOutput.value = `${ui.ledBrightness.value}%`;
   document.querySelector(`input[name="bridge_role"][value="${config.bridge_role ?? 0}"]`)?.click();
   ui.adminPassword.value = ""; ui.adminPassword.disabled = transport?.type !== "usb";
   updateRoleConstraints(); ui.unsavedBadge.hidden = true;
@@ -174,6 +177,12 @@ function updateRoleConstraints() {
     ui.roleHint.textContent = "地面端固定连接 STA 网络，并通过 USB 输出 MAVLink。";
   } else {
     ui.wifiMode.disabled = false; ui.usbMode.disabled = false; ui.roleHint.textContent = "网关模式可独立设置 Wi-Fi 与 USB 工作方式。";
+  }
+  if (Number(ui.fcTransport.value) === 1) {
+    ui.routeMode.value = "0";
+    ui.routeMode.disabled = true;
+  } else {
+    ui.routeMode.disabled = false;
   }
 }
 
@@ -400,7 +409,7 @@ async function sha256(blob) {
 
 async function validateOtaFiles(manifest, firmware) {
   if (manifest.hardware_id !== "airlink-c5-mesh-v1" || manifest.target_chip !== "esp32c5" || manifest.flash_bytes !== 8388608 || manifest.psram_bytes !== 8388608) throw new Error("固件硬件、芯片或 N8R8 容量要求不匹配");
-  if (!/^v?0\.3\.2-dev$/i.test(manifest.version)) throw new Error("固件版本不是 V0.3.2-DEV");
+  if (!/^v?0\.3\.3-dev$/i.test(manifest.version)) throw new Error("固件版本不是 V0.3.3-DEV");
   const digest = await sha256(firmware);
   if (digest !== String(manifest.images?.["airlink.bin"] || "").toLowerCase()) throw new Error("airlink.bin SHA-256 与 manifest 不一致");
   return {
@@ -446,11 +455,11 @@ async function otaFromGithub() {
   if (!transport || busy) return;
   setBusy(true, "正在读取 GitHub Prerelease…");
   try {
-    const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.3.2-dev";
+    const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.3.3-dev";
     const releaseResponse = await fetch(api, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
     if (!releaseResponse.ok) throw new Error(`GitHub Release HTTP ${releaseResponse.status}`);
     const release = await releaseResponse.json();
-    if (release.draft || !release.prerelease || release.tag_name !== "v0.3.2-dev") throw new Error("GitHub Release 状态或标签不符合 V0.3.2-DEV");
+    if (release.draft || !release.prerelease || release.tag_name !== "v0.3.3-dev") throw new Error("GitHub Release 状态或标签不符合 V0.3.3-DEV");
     const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
     const manifestAsset = assets.get("manifest.json"); const firmwareAsset = assets.get("airlink.bin");
     if (!manifestAsset || !firmwareAsset) throw new Error("GitHub Release 缺少 manifest.json 或 airlink.bin");
@@ -510,7 +519,7 @@ function switchLanguage() {
   sections.forEach((section, index) => { section.querySelector("h3").textContent = text.sections[index]; section.querySelector("p").textContent = text.sectionCopies[index]; });
   const roleCards = document.querySelectorAll(".role-card");
   roleCards.forEach((card, index) => { card.querySelector("strong").textContent = text.roles[index]; card.querySelector("small").textContent = text.roleCopies[index]; });
-  const fieldControls = [ui.routeMode, ui.uartBaud, ui.udpPort, ui.tcpPort, ui.wifiMode, ui.wifiBand, ui.apSsid, ui.apPassword, ui.staSsid, ui.staPassword, ui.usbMode, ui.canBitrate, ui.ledBrightness, ui.adminPassword];
+  const fieldControls = [ui.routeMode, ui.fcTransport, ui.uartBaud, ui.udpPort, ui.tcpPort, ui.wifiMode, ui.wifiBand, ui.apSsid, ui.apPassword, ui.staSsid, ui.staPassword, ui.usbMode, ui.canBitrate, ui.canNodeId, ui.canRemoteNodeId, ui.canSerialId, ui.ledBrightness, ui.adminPassword];
   fieldControls.forEach((control, index) => { const label = control.closest("label"); const lead = [...label.childNodes].find((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim()); if (lead) lead.textContent = text.fields[index]; label.title = text.fieldHelp[index]; control.setAttribute("aria-description", text.fieldHelp[index]); });
   const cards = document.querySelectorAll(".tool-card");
   [text.profile, text.diag, text.pair, text.ota].forEach((value, index) => { cards[index].querySelector("h2").textContent = value; cards[index].querySelector("p:not(.eyebrow)").textContent = text.toolCopies[index]; });
@@ -528,6 +537,7 @@ ui.importProfileButton.addEventListener("click", () => ui.profileFile.click()); 
 ui.batchApplyButton.addEventListener("click", batchApply); ui.pairAirButton.addEventListener("click", () => pair(1)); ui.pairGroundButton.addEventListener("click", () => pair(2)); ui.verifyPairButton.addEventListener("click", verifyPair);
 ui.otaGithubButton.addEventListener("click", otaFromGithub); ui.otaButton.addEventListener("click", otaUpdate); ui.languageButton.addEventListener("click", switchLanguage);
 ui.ledBrightness.addEventListener("input", () => { ui.brightnessOutput.value = `${ui.ledBrightness.value}%`; });
+ui.fcTransport.addEventListener("change", updateRoleConstraints);
 ui.configForm.addEventListener("input", () => { if (transport) { ui.unsavedBadge.hidden = false; ui.saveState.textContent = "有未保存的更改"; } });
 for (const role of document.querySelectorAll('input[name="bridge_role"]')) role.addEventListener("change", updateRoleConstraints);
 for (const button of document.querySelectorAll("[data-toggle-password]")) button.addEventListener("click", () => { const input = $(button.dataset.togglePassword); const reveal = input.type === "password"; input.type = reveal ? "text" : "password"; button.textContent = reveal ? "隐藏" : "显示"; });

@@ -102,11 +102,13 @@ static esp_err_t status_handler(httpd_req_t *request)
     airlink_can_status_t can; airlink_can_get_status(&can);
     airlink_config_t active_config; airlink_config_get(&active_config);
     const uint8_t vehicle_endpoint = active_config.bridge_role == AIRLINK_BRIDGE_GROUND ?
-                                     AIRLINK_ENDPOINT_ID_BRIDGE : AIRLINK_ENDPOINT_ID_FC_UART;
+        AIRLINK_ENDPOINT_ID_BRIDGE :
+        (active_config.fc_transport == AIRLINK_FC_TRANSPORT_DRONECAN ?
+         AIRLINK_ENDPOINT_ID_FC_CAN : AIRLINK_ENDPOINT_ID_FC_UART);
     airlink_endpoint_stats_t fc; airlink_router_get_stats(vehicle_endpoint, &fc);
     const uint32_t bridge_tx_queue_drops = wifi.bridge_tx_queue_drops;
     const esp_app_desc_t *app = esp_app_get_description();
-    char json[2048];
+    char json[3072];
     snprintf(json, sizeof(json),
         "{\"product\":\"%s\",\"hardware_id\":\"%s\",\"firmware\":\"%s\","
         "\"build_date\":\"%s %s\",\"serial\":\"%s\",\"recovery\":%s,\"read_only\":%s,"
@@ -133,7 +135,11 @@ static esp_err_t status_handler(httpd_req_t *request)
         "\"can\":{\"rx_frames\":%" PRIu32 ",\"tx_frames\":%" PRIu32
         ",\"bus_errors\":%" PRIu32 ",\"dronecan_errors\":%" PRIu32
         ",\"arbitration_lost\":%" PRIu32 ",\"bus_off\":%" PRIu32
-        ",\"nodes\":%u},"
+        ",\"nodes\":%u,\"tunnel_rx_bytes\":%" PRIu64
+        ",\"tunnel_tx_bytes\":%" PRIu64 ",\"tunnel_rx_transfers\":%" PRIu32
+        ",\"tunnel_tx_transfers\":%" PRIu32 ",\"tunnel_drops\":%" PRIu32
+        ",\"high_queue_drops\":%" PRIu32 ",\"normal_queue_drops\":%" PRIu32
+        ",\"keepalives\":%" PRIu32 ",\"peer_online\":%s},"
         "\"listeners\":{\"udp_port\":%u,\"tcp_port\":%u},"
         "\"ota\":{\"in_progress\":%s,\"running_partition\":\"%s\","
         "\"image_state\":%" PRId32 "}}",
@@ -159,6 +165,9 @@ static esp_err_t status_handler(httpd_req_t *request)
         uart.high_queue_drops, uart.normal_queue_drops,
         can.rx_frames, can.tx_frames, can.bus_errors, can.dronecan_errors,
         can.arbitration_lost, can.bus_off_count, can.dronecan_nodes,
+        can.tunnel_rx_bytes, can.tunnel_tx_bytes, can.tunnel_rx_transfers,
+        can.tunnel_tx_transfers, can.tunnel_drops, can.high_queue_drops,
+        can.normal_queue_drops, can.keepalives, can.peer_online ? "true" : "false",
         active_config.udp_port, active_config.tcp_port,
         airlink_ota_in_progress() ? "true" : "false",
         airlink_ota_running_partition(), airlink_ota_image_state());
@@ -185,6 +194,10 @@ static esp_err_t config_get_handler(httpd_req_t *request)
     cJSON_AddNumberToObject(root, "usb_mode", c->usb_mode);
     cJSON_AddNumberToObject(root, "bridge_role", c->bridge_role);
     cJSON_AddNumberToObject(root, "can_bitrate", c->can_bitrate);
+    cJSON_AddNumberToObject(root, "fc_transport", c->fc_transport);
+    cJSON_AddNumberToObject(root, "can_node_id", c->can_node_id);
+    cJSON_AddNumberToObject(root, "can_remote_node_id", c->can_remote_node_id);
+    cJSON_AddNumberToObject(root, "can_serial_id", c->can_serial_id);
     cJSON_AddNumberToObject(root, "led_brightness", c->led_brightness);
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -249,6 +262,14 @@ static bool receive_config_request(httpd_req_t *request, airlink_config_t *c)
     c->bridge_role = (airlink_bridge_role_t)value;
     c->bridge_enabled = c->bridge_role != AIRLINK_BRIDGE_OFF;
     valid &= json_u32(root, "can_bitrate", &c->can_bitrate);
+    value = c->fc_transport; valid &= json_u32(root, "fc_transport", &value);
+    c->fc_transport = (airlink_fc_transport_t)value;
+    value = c->can_node_id; valid &= json_u32(root, "can_node_id", &value) && value <= UINT8_MAX;
+    c->can_node_id = (uint8_t)value;
+    value = c->can_remote_node_id; valid &= json_u32(root, "can_remote_node_id", &value) && value <= UINT8_MAX;
+    c->can_remote_node_id = (uint8_t)value;
+    value = (uint8_t)c->can_serial_id; valid &= json_u32(root, "can_serial_id", &value) && value <= INT8_MAX;
+    c->can_serial_id = (int8_t)value;
     value = c->led_brightness; valid &= json_u32(root, "led_brightness", &value) && value <= 100;
     c->led_brightness = (uint8_t)value;
     cJSON_Delete(root);
@@ -265,7 +286,7 @@ static esp_err_t capabilities_handler(httpd_req_t *request)
         "\"hardware_id\":\"%s\",\"firmware\":\"%s\",\"features\":{"
         "\"usb_atomic_config\":true,\"config_validate\":true,\"wifi_scan\":true,"
         "\"udp_discovery\":true,\"diagnostics_v2\":true,\"ota_upload\":true,"
-        "\"transparent_chunking\":true}}",
+        "\"transparent_chunking\":true,\"dronecan_tunnel\":true}}",
         AIRLINK_CONFIG_SCHEMA_VERSION, AIRLINK_HARDWARE_ID, app->version);
     return send_json(request, json);
 }

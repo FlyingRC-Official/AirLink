@@ -351,7 +351,7 @@ def self_test() -> int:
     assert parsed["frames"] == 2
     assert parsed["valid_heartbeats"] == 2
     assert parsed["bytes_received"] == len(b"noise" + frame + frame)
-    fields = parse_fields("firmware=0.3.2-dev\r\nbridge_connected=1\r\n")
+    fields = parse_fields("firmware=0.3.3-dev\r\nbridge_connected=1\r\n")
     assert fields["bridge_connected"] == "1"
     assert "ap_password" not in safe_config({"ap_password": "secret", "ap_ssid": "air"})
     report = {"checks": {}}
@@ -365,7 +365,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--air-port")
     parser.add_argument("--ground-port")
-    parser.add_argument("--expected-version", default="0.3.2-dev")
+    parser.add_argument("--expected-version", default="0.3.3-dev")
     parser.add_argument("--pair", action="store_true", help="atomically copy air AP credentials to ground STA")
     parser.add_argument("--settle", type=float, default=10.0)
     parser.add_argument("--ready-timeout", type=float, default=45.0,

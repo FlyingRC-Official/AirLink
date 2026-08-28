@@ -23,6 +23,44 @@ typedef struct {
     uint32_t crc32;
 } config_record_t;
 
+/* Exact schema-v1 layout. Keep this private type permanently: A/B records are
+ * CRC-protected over their serialized representation, so migration must first
+ * validate the old bytes with the old size before expanding them. */
+typedef struct {
+    uint16_t schema_version;
+    airlink_route_mode_t route_mode;
+    uint32_t uart_baud;
+    airlink_wifi_mode_t wifi_mode;
+    airlink_wifi_band_t wifi_band;
+    char ap_ssid[AIRLINK_SSID_MAX + 1];
+    char ap_password[AIRLINK_PASSWORD_MAX + 1];
+    char sta_ssid[AIRLINK_SSID_MAX + 1];
+    char sta_password[AIRLINK_PASSWORD_MAX + 1];
+    uint16_t udp_port;
+    uint16_t tcp_port;
+    airlink_usb_mode_t usb_mode;
+    uint32_t can_bitrate;
+    uint8_t led_brightness;
+    char serial_number[AIRLINK_SERIAL_MAX + 1];
+    char admin_password[AIRLINK_PASSWORD_MAX + 1];
+    bool bridge_enabled;
+    airlink_bridge_role_t bridge_role;
+} airlink_config_v1_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t generation;
+    airlink_config_v1_t config;
+    uint32_t crc32;
+} config_record_v1_t;
+
+typedef struct {
+    bool valid;
+    uint32_t generation;
+    airlink_config_t config;
+    bool migrated;
+} decoded_record_t;
+
 typedef struct {
     uint32_t magic;
     char serial_number[AIRLINK_SERIAL_MAX + 1];
@@ -32,6 +70,8 @@ typedef struct {
 
 _Static_assert(sizeof(airlink_bridge_role_t) == sizeof(uint32_t),
                "bridge role must preserve the schema-v1 reserved field layout");
+_Static_assert(offsetof(airlink_config_t, fc_transport) == sizeof(airlink_config_v1_t),
+               "schema-v2 fields must be appended after the exact schema-v1 layout");
 
 #define CONFIG_MAGIC UINT32_C(0x414c4346)
 #define IDENTITY_MAGIC UINT32_C(0x414c4944)
@@ -86,6 +126,14 @@ bool airlink_config_validate(const airlink_config_t *config)
     if (config->usb_mode > AIRLINK_USB_MAVLINK || !can_bitrate_valid(config->can_bitrate)) return false;
     if (config->bridge_role > AIRLINK_BRIDGE_GROUND ||
         config->bridge_enabled != (config->bridge_role != AIRLINK_BRIDGE_OFF)) return false;
+    if (config->fc_transport > AIRLINK_FC_TRANSPORT_DRONECAN) return false;
+    if (config->can_node_id < 1U || config->can_node_id > 127U ||
+        config->can_remote_node_id < 1U ||
+        config->can_remote_node_id > 127U ||
+        config->can_node_id == config->can_remote_node_id ||
+        config->can_serial_id < 0 || config->can_serial_id > 15) return false;
+    if (config->fc_transport == AIRLINK_FC_TRANSPORT_DRONECAN &&
+        config->route_mode != AIRLINK_ROUTE_MAVLINK) return false;
     if (config->udp_port == 0 || config->tcp_port == 0 || config->led_brightness > 100) return false;
     const size_t ap_ssid_len = strnlen(config->ap_ssid, sizeof(config->ap_ssid));
     const size_t sta_ssid_len = strnlen(config->sta_ssid, sizeof(config->sta_ssid));
@@ -168,6 +216,10 @@ static void load_defaults(airlink_config_t *config)
         .led_brightness = 25,
         .bridge_enabled = false,
         .bridge_role = AIRLINK_BRIDGE_OFF,
+        .fc_transport = AIRLINK_FC_TRANSPORT_UART,
+        .can_node_id = 125,
+        .can_remote_node_id = 10,
+        .can_serial_id = 0,
     };
     snprintf(config->ap_ssid, sizeof(config->ap_ssid), "FlyingRC-AirLink-%02X%02X", mac[4], mac[5]);
     random_password(config->ap_password);
@@ -191,20 +243,68 @@ static bool record_valid(const config_record_t *record, size_t length)
            record->crc32 == record_crc(record) && airlink_config_validate(&record->config);
 }
 
-static esp_err_t read_slot(nvs_handle_t nvs, const char *key, config_record_t *record, bool *valid)
+static uint32_t record_v1_crc(const config_record_v1_t *record)
 {
-    size_t length = sizeof(*record);
-    const esp_err_t err = nvs_get_blob(nvs, key, record, &length);
+    return airlink_crc32(record, offsetof(config_record_v1_t, crc32));
+}
+
+static bool config_v1_valid(const airlink_config_v1_t *config)
+{
+    if (config == NULL || config->schema_version != 1U) return false;
+    airlink_config_t migrated = {0};
+    memcpy(&migrated, config, sizeof(*config));
+    migrated.schema_version = AIRLINK_CONFIG_SCHEMA_VERSION;
+    migrated.fc_transport = AIRLINK_FC_TRANSPORT_UART;
+    migrated.can_node_id = 125;
+    migrated.can_remote_node_id = 10;
+    migrated.can_serial_id = 0;
+    return airlink_config_validate(&migrated);
+}
+
+static void migrate_v1(const airlink_config_v1_t *source, airlink_config_t *destination)
+{
+    memset(destination, 0, sizeof(*destination));
+    memcpy(destination, source, sizeof(*source));
+    destination->schema_version = AIRLINK_CONFIG_SCHEMA_VERSION;
+    destination->fc_transport = AIRLINK_FC_TRANSPORT_UART;
+    destination->can_node_id = 125;
+    destination->can_remote_node_id = 10;
+    destination->can_serial_id = 0;
+}
+
+static esp_err_t read_slot(nvs_handle_t nvs, const char *key, decoded_record_t *decoded)
+{
+    *decoded = (decoded_record_t){0};
+    size_t length = 0;
+    esp_err_t err = nvs_get_blob(nvs, key, NULL, &length);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        *valid = false;
         return ESP_OK;
     }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "slot %s unreadable: %s", key, esp_err_to_name(err));
-        *valid = false;
         return ESP_OK;
     }
-    *valid = record_valid(record, length);
+    if (length == sizeof(config_record_t)) {
+        config_record_t record = {0};
+        size_t actual = sizeof(record);
+        if (nvs_get_blob(nvs, key, &record, &actual) == ESP_OK && record_valid(&record, actual)) {
+            decoded->valid = true;
+            decoded->generation = record.generation;
+            decoded->config = record.config;
+        }
+    } else if (length == sizeof(config_record_v1_t)) {
+        config_record_v1_t record = {0};
+        size_t actual = sizeof(record);
+        if (nvs_get_blob(nvs, key, &record, &actual) == ESP_OK &&
+            actual == sizeof(record) && record.magic == CONFIG_MAGIC &&
+            record.crc32 == record_v1_crc(&record) && config_v1_valid(&record.config)) {
+            decoded->valid = true;
+            decoded->generation = record.generation;
+            decoded->migrated = true;
+            migrate_v1(&record.config, &decoded->config);
+        }
+    }
+    if (!decoded->valid) ESP_LOGW(TAG, "slot %s failed schema/CRC validation", key);
     return ESP_OK;
 }
 
@@ -273,10 +373,9 @@ esp_err_t airlink_config_init(airlink_config_snapshot_t *snapshot)
      * Read-write mode creates the namespace; the missing A/B records below then
      * correctly fall through to the generated defaults. */
     ESP_RETURN_ON_ERROR(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG, "open NVS");
-    config_record_t a = {0}, b = {0};
-    bool a_valid = false, b_valid = false;
-    ESP_GOTO_ON_ERROR(read_slot(nvs, "config_a", &a, &a_valid), out, TAG, "read slot A");
-    ESP_GOTO_ON_ERROR(read_slot(nvs, "config_b", &b, &b_valid), out, TAG, "read slot B");
+    decoded_record_t a = {0}, b = {0};
+    ESP_GOTO_ON_ERROR(read_slot(nvs, "config_a", &a), out, TAG, "read slot A");
+    ESP_GOTO_ON_ERROR(read_slot(nvs, "config_b", &b), out, TAG, "read slot B");
 out:
     nvs_close(nvs);
     ESP_RETURN_ON_ERROR(ret, TAG, "load configuration");
@@ -286,10 +385,12 @@ out:
     factory_identity_t identity;
     const bool identity_present = read_identity(&identity);
     bool defaults = false;
-    if (a_valid || b_valid) {
-        const config_record_t *selected = !b_valid || (a_valid && a.generation >= b.generation) ? &a : &b;
+    bool schema_migrated = false;
+    if (a.valid || b.valid) {
+        const decoded_record_t *selected = !b.valid || (a.valid && a.generation >= b.generation) ? &a : &b;
         s_config = selected->config;
         s_generation = selected->generation;
+        schema_migrated = selected->migrated;
     } else {
         load_defaults(&s_config);
         s_generation = 1;
@@ -323,7 +424,7 @@ out:
     }
     if (defaults) {
         ESP_RETURN_ON_ERROR(write_record(&s_config, s_generation), TAG, "store defaults");
-    } else if (credentials_changed) {
+    } else if (credentials_changed || schema_migrated) {
         ESP_RETURN_ON_ERROR(save_locked(&s_config), TAG, "store provisioned credentials");
     }
     if (snapshot != NULL) {

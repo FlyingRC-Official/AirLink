@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run secret-safe V0.3.2 USB CLI acceptance checks on a physical AirLink."""
+"""Run secret-safe V0.3.3 USB CLI acceptance checks on a physical AirLink."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import serial
 
 
 ESCAPE = b"+++AIRLINK-CLI\r\n"
-EXPECTED_VERSION = "0.3.2-dev"
+EXPECTED_VERSION = "0.3.3-dev"
 DIAGNOSTIC_TERMS = re.compile(
     r"rst:|reset|boot:|ESP_ERROR_CHECK|abort|guru|panic|assert|backtrace|"
     r"airlink|recovery|services ready|rollback|error|failed", re.IGNORECASE)

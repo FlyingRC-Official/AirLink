@@ -116,7 +116,7 @@ func (server *helperServer) health(response http.ResponseWriter, request *http.R
 		writeJSON(response, http.StatusUnauthorized, map[string]string{"error": "invalid_helper_session"})
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "version": "0.3.2-dev", "discovery_port": discoveryPort})
+	writeJSON(response, http.StatusOK, map[string]any{"ok": true, "version": "0.3.3-dev", "discovery_port": discoveryPort})
 }
 
 func discover(ctx context.Context, timeout time.Duration) ([]discoveredDevice, error) {
@@ -377,7 +377,7 @@ func main() {
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}
 	launchURL := fmt.Sprintf("http://%s/?session=%s", listener.Addr().String(), session)
-	fmt.Printf("AirLink Configurator V0.3.2-DEV: %s\n", launchURL)
+	fmt.Printf("AirLink Configurator V0.3.3-DEV: %s\n", launchURL)
 	if !*noBrowser {
 		_ = openBrowser(launchURL)
 	}

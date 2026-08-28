@@ -49,11 +49,14 @@ esp_err_t airlink_board_init(airlink_board_probe_t *probe)
         .pull_up_en = GPIO_PULLUP_ENABLE,
     };
     const gpio_config_t outputs = {
-        .pin_bit_mask = UINT64_C(1) << AIRLINK_GPIO_ACT_LED,
+        .pin_bit_mask = (UINT64_C(1) << AIRLINK_GPIO_ACT_LED) |
+                        (UINT64_C(1) << AIRLINK_GPIO_CAN_SILENT),
         .mode = GPIO_MODE_OUTPUT,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&inputs), TAG, "BOOT GPIO setup failed");
-    ESP_RETURN_ON_ERROR(gpio_config(&outputs), TAG, "ACT GPIO setup failed");
+    ESP_RETURN_ON_ERROR(gpio_config(&outputs), TAG, "output GPIO setup failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(AIRLINK_GPIO_CAN_SILENT, 0), TAG,
+                        "CAN transceiver normal-mode setup failed");
     const esp_timer_create_args_t timer_args = {.callback = act_off, .name = "act_led"};
     ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_act_timer), TAG, "ACT timer setup failed");
 

@@ -20,6 +20,22 @@
   pending for the complete 30-second health window.
 - Pair-test CAN at 125k, 250k, 500k and 1Mbit/s; create Bus-Off and confirm
   recovery and counters. Confirm DroneCAN NodeStatus visibility.
+- For DroneCAN MAVLink, keep the aircraft disarmed with props removed and one
+  5 V source. Configure the air unit for node 125, remote node 10, serial ID 0,
+  1 Mbit/s and MAVLink mode. On ArduPilot enable `CAN_D1_UC_SER_EN`, reboot,
+  then set `CAN_D1_UC_S1_NOD=125`, `CAN_D1_UC_S1_IDX=0`,
+  `CAN_D1_UC_S1_BD=115` and `CAN_D1_UC_S1_PRO=2`, and reboot again.
+- Verify NodeStatus/GetNodeInfo, online peer state, zero bit/form/stuff/ACK
+  errors and zero bus-off. Arbitration loss is normal CAN bus access and is
+  reported separately from errors.
+- Through the ground unit USB, read every flight-controller parameter with no
+  missing index and run at least three minutes of telemetry plus repeated named
+  parameter requests. Require valid bidirectional heartbeats, zero MAVLink CRC
+  errors, and no CAN/router queue drops. Reboot the air unit and require the
+  wireless and DroneCAN MAVLink paths to recover automatically.
+- If standard ArduPilot parameters do not expose a MAVLink backend (see
+  ArduPilot issue 31212), stop the release; do not introduce a flight-controller
+  patch or private CAN protocol.
 - Run a 24-hour full-load soak with no unexpected reboot or declining heap.
 
 ## Flight gate
