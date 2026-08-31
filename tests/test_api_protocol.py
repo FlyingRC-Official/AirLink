@@ -49,10 +49,11 @@ def main() -> None:
         "AIRLINK_AP_ADDRESS", "API_SESSION_IDLE_TIMEOUT_US", "parsed_counter <= session->counter",
         "X-AirLink-Body-SHA256", "constant_time_equal", 'URI("/api/v2/session/challenge"',
         'URI("/api/v2/session/auth"', 'URI("/api/v2/config"', 'URI("/api/v2/diagnostics"',
-        "ota_body_hash_mismatch", "management_ap_only",
+        "ota_body_hash_mismatch", "management_ap_only", "mbedtls_md(",
     ]:
         assert marker in source, f"missing API-v2 guard: {marker}"
-    for forbidden in ["Basic realm", '"Authorization"', "/api/v1/", "index_html_gz"]:
+    for forbidden in ["Basic realm", '"Authorization"', "/api/v1/", "index_html_gz",
+                      "mbedtls/sha256.h"]:
         assert forbidden not in source, f"legacy API/UI path remains: {forbidden}"
 
 

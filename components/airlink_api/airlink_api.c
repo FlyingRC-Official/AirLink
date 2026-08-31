@@ -26,7 +26,6 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mbedtls/md.h"
-#include "mbedtls/sha256.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -98,10 +97,12 @@ static bool body_hash_matches(httpd_req_t *request, const uint8_t *body, size_t 
 {
     char supplied_text[65];
     uint8_t supplied[32], actual[32];
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (httpd_req_get_hdr_value_str(request, "X-AirLink-Body-SHA256", supplied_text,
                                     sizeof(supplied_text)) != ESP_OK ||
         !decode_hex(supplied_text, supplied, sizeof(supplied)) ||
-        mbedtls_sha256(body != NULL ? body : (const uint8_t *)"", length, actual, 0) != 0) return false;
+        info == NULL ||
+        mbedtls_md(info, body != NULL ? body : (const uint8_t *)"", length, actual) != 0) return false;
     return constant_time_equal(supplied, actual, sizeof(actual));
 }
 
