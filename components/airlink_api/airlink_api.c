@@ -25,7 +25,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "mbedtls/md.h"
+#include "psa/crypto.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -88,21 +88,35 @@ static void encode_hex(const uint8_t *input, size_t length, char *output)
 static bool hmac_sha256(const uint8_t *key, size_t key_length,
                         const uint8_t *data, size_t data_length, uint8_t output[32])
 {
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    return info != NULL && mbedtls_md_hmac(info, key, key_length,
-                                           data, data_length, output) == 0;
+    psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attributes, PSA_KEY_TYPE_HMAC);
+    psa_set_key_bits(&attributes, key_length * 8U);
+    psa_set_key_usage_flags(&attributes, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attributes, PSA_ALG_HMAC(PSA_ALG_SHA_256));
+    mbedtls_svc_key_id_t key_id = MBEDTLS_SVC_KEY_ID_INIT;
+    psa_status_t status = psa_import_key(&attributes, key, key_length, &key_id);
+    psa_reset_key_attributes(&attributes);
+    size_t output_length = 0;
+    if (status == PSA_SUCCESS) {
+        status = psa_mac_compute(key_id, PSA_ALG_HMAC(PSA_ALG_SHA_256),
+                                 data, data_length, output, 32, &output_length);
+        (void)psa_destroy_key(key_id);
+    }
+    return status == PSA_SUCCESS && output_length == 32U;
 }
 
 static bool body_hash_matches(httpd_req_t *request, const uint8_t *body, size_t length)
 {
     char supplied_text[65];
     uint8_t supplied[32], actual[32];
-    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    size_t actual_length = 0;
     if (httpd_req_get_hdr_value_str(request, "X-AirLink-Body-SHA256", supplied_text,
                                     sizeof(supplied_text)) != ESP_OK ||
         !decode_hex(supplied_text, supplied, sizeof(supplied)) ||
-        info == NULL ||
-        mbedtls_md(info, body != NULL ? body : (const uint8_t *)"", length, actual) != 0) return false;
+        psa_hash_compute(PSA_ALG_SHA_256,
+                         body != NULL ? body : (const uint8_t *)"", length,
+                         actual, sizeof(actual), &actual_length) != PSA_SUCCESS ||
+        actual_length != sizeof(actual)) return false;
     return constant_time_equal(supplied, actual, sizeof(actual));
 }
 
@@ -634,6 +648,7 @@ static esp_err_t ota_handler(httpd_req_t *request)
 
 esp_err_t airlink_api_start(bool recovery_mode, bool read_only_mode)
 {
+    if (psa_crypto_init() != PSA_SUCCESS) return ESP_FAIL;
     s_recovery_mode = recovery_mode;
     s_read_only_mode = read_only_mode;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
