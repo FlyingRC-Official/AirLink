@@ -1,10 +1,15 @@
 # Bench and flight acceptance
 
-## V0.4 Mesh gate
+## V0.5 release gate
 
-- Build release, recovery and factory-test with ESP-IDF 6.0.2; run C host,
-  configurator Node, helper Go and release-package checks. Confirm a V0.3.3
-  downgrade still reads the unchanged schema-v2 configuration.
+- Build only release and recovery with ESP-IDF 6.0.2; run C host, Web Serial
+  flasher and release-package checks. Confirm Factory, BLE, embedded HTML and
+  legacy Configurator artifacts are absent.
+- Exercise provisioning v1/v2, identity non-overwrite, interrupted first boot
+  and reset preservation. Exercise config transaction timeout, disconnect,
+  rollback, invalid combinations and armed rejection.
+- Exercise API-v2 challenge/auth, request counters, body digests, replay,
+  password failure, idle expiry and rejection on the STA interface.
 - With one root and eight distinct MAVLink system IDs, exercise direct,
   two-link and three-link paths, parent reselection, relay power loss, node
   restart, channel interference and root loss/restoration. No air node may

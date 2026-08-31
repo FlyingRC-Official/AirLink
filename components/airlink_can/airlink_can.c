@@ -58,7 +58,6 @@ static QueueHandle_t s_normal_queue;
 static airlink_can_status_t s_status;
 static dronecan_node_t s_nodes[128];
 static atomic_bool s_recover_requested;
-static bool s_factory_mode;
 static bool s_tunnel_enabled;
 static TaskHandle_t s_can_task;
 static CanardInstance s_canard;
@@ -511,8 +510,7 @@ esp_err_t airlink_can_start(const airlink_can_options_t *options)
         options->remote_node_id < 1U || options->remote_node_id > 127U ||
         options->local_node_id == options->remote_node_id || options->serial_id < 0 ||
         options->serial_id > 15) return ESP_ERR_INVALID_ARG;
-    s_factory_mode = options->factory_mode;
-    s_tunnel_enabled = options->tunnel_enabled && !options->factory_mode;
+    s_tunnel_enabled = options->tunnel_enabled;
     s_local_node_id = options->local_node_id;
     s_remote_node_id = options->remote_node_id;
     s_serial_id = options->serial_id;
@@ -541,41 +539,6 @@ esp_err_t airlink_can_start(const airlink_can_options_t *options)
 }
 
 bool airlink_can_ready(void) { return s_node != NULL && s_can_task != NULL; }
-
-esp_err_t airlink_can_factory_set_bitrate(uint32_t bitrate)
-{
-    if (!s_factory_mode) return ESP_ERR_NOT_ALLOWED;
-    if (bitrate != 125000 && bitrate != 250000 && bitrate != 500000 && bitrate != 1000000) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_can_task == NULL || s_node == NULL) return ESP_ERR_INVALID_STATE;
-    vTaskSuspend(s_can_task);
-    esp_err_t err = twai_node_disable(s_node);
-    if (err == ESP_OK) {
-        err = twai_node_delete(s_node);
-        if (err == ESP_OK) s_node = NULL;
-    }
-    if (err == ESP_OK) err = create_node(bitrate);
-    xQueueReset(s_rx_queue);
-    vTaskResume(s_can_task);
-    return err;
-}
-
-esp_err_t airlink_can_factory_transmit(uint32_t id, bool extended,
-                                       const uint8_t *data, size_t length)
-{
-    if (!s_factory_mode) return ESP_ERR_NOT_ALLOWED;
-    if (data == NULL || length > 8) return ESP_ERR_INVALID_ARG;
-    const int64_t deadline = esp_timer_get_time() + INT64_C(20000);
-    esp_err_t err;
-    do {
-        err = submit_frame(id, extended, data, length);
-        if (err != ESP_ERR_TIMEOUT) break;
-        vTaskDelay(pdMS_TO_TICKS(1));
-    } while (esp_timer_get_time() < deadline);
-    if (err == ESP_OK) increment_saturated_u32(&s_status.tx_frames);
-    return err;
-}
 
 void airlink_can_get_status(airlink_can_status_t *status)
 {

@@ -2,7 +2,7 @@ import { ESPLoader, Transport } from "esptool-js";
 import SparkMD5 from "spark-md5";
 import {
   PROVISION, createProvisionImage, credentialText, deviceSsid, factoryIdentityPresent,
-  generatePassword, passwordValid,
+  generatePassword, passwordValid, serialValid,
 } from "./provisioning.js";
 import {
   RELEASE, loadReleaseFirmware, releasePageUrl,
@@ -119,10 +119,11 @@ app.innerHTML = `
         <section class="card step-card" id="credentialCard">
           <div class="step-heading">
             <span class="step-number">03</span>
-            <div><h2>设置初始凭据</h2><p>生成或输入首次 Wi-Fi 与网页管理密码</p></div>
+            <div><h2>设置初始身份与凭据</h2><p>输入设备序列号并生成初始管理密码</p></div>
             <span class="status-pill neutral" id="credentialStatus">等待设备</span>
           </div>
           <div class="credential-grid">
+            <label><span>设备序列号</span><input id="serialInput" maxlength="24" autocomplete="off" placeholder="AIRLINK-000001" /></label>
             <label><span>初始 Wi-Fi 名称</span><input id="ssidInput" value="连接设备后自动生成" readonly /></label>
             <label><span>Wi-Fi / 管理员密码</span><div class="password-row"><input id="passwordInput" type="password" autocomplete="new-password" /><button id="togglePassword" type="button">显示</button></div></label>
           </div>
@@ -158,7 +159,7 @@ app.innerHTML = `
           </div>
 
           <button class="button flash-button" id="flashButton" type="button" disabled>
-            安全烧录 AirLink V0.4.0-DEV
+            安全烧录 AirLink V0.5.0-DEV
           </button>
           <p class="microcopy centered">预计约 1–3 分钟。写入完成前不要关闭网页、拔出 USB 或按 RESET。</p>
 
@@ -197,7 +198,7 @@ const ui = Object.fromEntries(
     "browserWarning", "connectButton", "deviceStatus", "deviceDetails", "chipName", "macAddress", "flashSize", "usbInfo",
     "firmwareStatus", "fileList", "safetyCheck", "flashButton", "flashStatus", "progressLabel",
     "progressPercent", "progressTrack", "progressBar", "successPanel", "successText", "logOutput", "copyLog", "clearLog",
-    "credentialStatus", "ssidInput", "passwordInput", "togglePassword", "generatePassword", "copyCredentials",
+    "credentialStatus", "serialInput", "ssidInput", "passwordInput", "togglePassword", "generatePassword", "copyCredentials",
     "downloadCredentials", "credentialCheck", "credentialHint", "retryFirmware", "releaseLink",
   ].map((id) => [id, document.getElementById(id)]),
 );
@@ -268,7 +269,8 @@ function renderFiles(items = []) {
 
 function updateFlashAvailability() {
   const credentialReady = !state.identityBlank ||
-    (passwordValid(ui.passwordInput.value) && ui.credentialCheck.checked && Boolean(state.credentials));
+    (serialValid(ui.serialInput.value) && passwordValid(ui.passwordInput.value) &&
+      ui.credentialCheck.checked && Boolean(state.credentials));
   ui.flashButton.disabled = !(
     state.connected && state.firmware.length === RELEASE.files.length && ui.safetyCheck.checked &&
     credentialReady && !state.flashing
@@ -276,7 +278,8 @@ function updateFlashAvailability() {
 }
 
 function rebuildCredentials() {
-  if (!state.identityBlank || !state.mac || !passwordValid(ui.passwordInput.value)) {
+  if (!state.identityBlank || !state.mac || !serialValid(ui.serialInput.value) ||
+      !passwordValid(ui.passwordInput.value)) {
     state.credentials = "";
     ui.copyCredentials.disabled = true;
     ui.downloadCredentials.disabled = true;
@@ -285,6 +288,7 @@ function rebuildCredentials() {
     return;
   }
   state.credentials = credentialText({
+    serial: ui.serialInput.value,
     mac: state.mac,
     ssid: state.ssid,
     password: ui.passwordInput.value,
@@ -469,6 +473,8 @@ async function connectDevice() {
     log(`设备连接成功：${chipName}`, "success");
     log(`硬件校验通过：Flash ${flashSize}，MAC ${state.mac}`, "success");
     if (state.identityBlank) {
+      ui.serialInput.disabled = false;
+      ui.serialInput.value = `AIRLINK-${state.mac.replace(/[^0-9A-F]/g, "").slice(-12)}`;
       ui.passwordInput.disabled = false;
       ui.generatePassword.disabled = false;
       ui.credentialCheck.checked = false;
@@ -477,6 +483,8 @@ async function connectDevice() {
       rebuildCredentials();
     } else {
       state.credentials = "";
+      ui.serialInput.value = "由永久身份数据管理";
+      ui.serialInput.disabled = true;
       ui.passwordInput.disabled = true;
       ui.generatePassword.disabled = true;
       ui.credentialCheck.checked = true;
@@ -544,7 +552,7 @@ async function flashFirmware() {
     images.push({
       name: "provision.bin",
       address: PROVISION.address,
-      data: createProvisionImage(ui.passwordInput.value),
+      data: createProvisionImage(ui.serialInput.value, ui.passwordInput.value),
     });
   }
   log(`开始安全${images.length}镜像烧录；eraseAll=false。`, "warning");
@@ -610,6 +618,10 @@ ui.retryFirmware.addEventListener("click", loadFirmwareFromRelease);
 ui.safetyCheck.addEventListener("change", updateFlashAvailability);
 ui.credentialCheck.addEventListener("change", updateFlashAvailability);
 ui.passwordInput.addEventListener("input", () => {
+  ui.credentialCheck.checked = false;
+  rebuildCredentials();
+});
+ui.serialInput.addEventListener("input", () => {
   ui.credentialCheck.checked = false;
   rebuildCredentials();
 });

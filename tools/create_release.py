@@ -72,7 +72,7 @@ def main() -> int:
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     for relative in [
-        "docs/PINOUT.md", "docs/FACTORY_TEST.md", "docs/ACCEPTANCE.md",
+        "docs/PINOUT.md", "docs/ACCEPTANCE.md",
         "docs/POWER_WIRING.md", "docs/RECOVERY.md", "CHANGELOG.md", "LICENSE",
         "THIRD_PARTY_NOTICES.md",
     ]:

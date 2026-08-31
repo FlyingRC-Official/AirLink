@@ -1,91 +1,36 @@
 name: firmware-ci
 on: [push, pull_request]
+
 jobs:
   host-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: tools/usb_flasher/package-lock.json
       - run: tests/run_host_tests.sh
-      - run: tests/check_web.sh
-      - run: python3 -m py_compile tools/airlink_factory.py tools/airlink_cli_acceptance.py tools/dronecan_bench.py tools/wifi_bridge_acceptance.py tools/capture_dual_usb_logs.py tools/collect_crash_diagnostics.py tools/create_release.py
+      - run: python3 -m py_compile tools/airlink_cli_acceptance.py tools/dronecan_bench.py tools/wifi_bridge_acceptance.py tools/capture_dual_usb_logs.py tools/collect_crash_diagnostics.py tools/create_release.py
       - run: python3 tools/wifi_bridge_acceptance.py --self-test
       - run: python3 tools/collect_crash_diagnostics.py --self-test
-      - name: Build and test cross-platform USB flasher
+      - name: Confirm removed products stay removed
+        run: |
+          test ! -e components/airlink_factory
+          test ! -e tools/configurator
+          test ! -e tools/airlink_factory.py
+          test ! -e sdkconfig.ci.factory-test
+          test ! -e web/index.html
+          ! grep -R '^CONFIG_BT_ENABLED=y' sdkconfig sdkconfig.defaults sdkconfig.ci.*
+          ! grep -R "CONFIG_AIRLINK_BUILD_FACTORY_TEST" --include='*.[ch]' --include='Kconfig*' components main .
+      - name: Build and test Web Serial flasher
         working-directory: tools/usb_flasher
         run: |
           npm ci
           npm run build
           npm test
-      - name: Build and test single-file configurator
-        working-directory: tools/configurator
-        run: |
-          npm run build
-          npm test
-  configurator-helper:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.24.x'
-          cache-dependency-path: tools/configurator/helper/go.mod
-      - name: Build and test configurator
-        working-directory: tools/configurator
-        run: |
-          npm run build
-          npm test
-      - name: Test and vet helper
-        working-directory: tools/configurator/helper
-        run: |
-          go test ./...
-          go vet ./...
-      - name: Build and smoke-test Windows helper
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: tools/configurator
-        run: |
-          go build -C helper -trimpath -o ../AirLink-Configurator-Helper.exe .
-          $process = Start-Process .\AirLink-Configurator-Helper.exe -ArgumentList '--listen','127.0.0.1:49373','--no-browser' -PassThru -WindowStyle Hidden -RedirectStandardOutput helper.log
-          try {
-            $line = $null
-            for ($i = 0; $i -lt 100 -and -not $line; $i++) {
-              if (Test-Path helper.log) { $line = Get-Content helper.log -Raw }
-              if (-not $line) { Start-Sleep -Milliseconds 100 }
-            }
-            if (-not $line) { throw 'helper did not write its launch URL' }
-            $session = [regex]::Match($line, 'session=([0-9a-f]{48})').Groups[1].Value
-            if (-not $session) { throw 'helper session not reported' }
-            $health = Invoke-RestMethod 'http://127.0.0.1:49373/helper/v1/health' -Headers @{ 'X-AirLink-Session' = $session }
-            if (-not $health.ok) { throw 'helper health check failed' }
-            $env:AIRLINK_CONFIGURATOR_DRY_RUN = '1'
-            cmd /c start_configurator.bat
-          } finally { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-      - name: Build and smoke-test macOS Universal helper
-        if: runner.os == 'macOS'
-        working-directory: tools/configurator
-        run: |
-          GOOS=darwin GOARCH=amd64 go build -C helper -trimpath -o ../helper-amd64 .
-          GOOS=darwin GOARCH=arm64 go build -C helper -trimpath -o ../helper-arm64 .
-          lipo -create helper-amd64 helper-arm64 -output AirLink-Configurator-Helper
-          ./AirLink-Configurator-Helper --listen 127.0.0.1:49373 --no-browser >helper.log 2>&1 & helper_pid=$!
-          trap 'kill "$helper_pid" 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do test -s helper.log && break; sleep 0.1; done
-          session=$(sed -n 's/.*session=\([0-9a-f]\{48\}\).*/\1/p' helper.log)
-          test -n "$session"
-          curl -fsS -H "X-AirLink-Session: $session" http://127.0.0.1:49373/helper/v1/health | grep -q '"ok":true'
-          AIRLINK_CONFIGURATOR_DRY_RUN=1 ./start_configurator.command
+
   flasher-platform:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -96,8 +41,8 @@ jobs:
       run:
         working-directory: tools/usb_flasher
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -109,27 +54,28 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item www/AirLink-Flasher-v0.4.0-dev.html AirLink-Flasher-v0.4.0-dev.html
+          Copy-Item www/AirLink-Flasher-v0.5.0-dev.html AirLink-Flasher-v0.5.0-dev.html
           $env:AIRLINK_FLASHER_DRY_RUN = "1"
           cmd /c start_flasher.bat
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate macOS launcher
         if: runner.os == 'macOS'
         run: |
-          cp www/AirLink-Flasher-v0.4.0-dev.html AirLink-Flasher-v0.4.0-dev.html
+          cp www/AirLink-Flasher-v0.5.0-dev.html AirLink-Flasher-v0.5.0-dev.html
           AIRLINK_FLASHER_DRY_RUN=1 ./start_flasher.command
+
   esp-idf:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        variant: [release, recovery, factory-test]
+        variant: [release, recovery]
     container: espressif/idf:v6.0.2
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - name: Build firmware
         run: |
           source /opt/esp/idf/export.sh

@@ -1,7 +1,7 @@
 export const RELEASE = Object.freeze({
-  tag: "v0.4.0-dev",
-  version: "0.4.0-dev",
-  label: "AirLink V0.4.0-DEV",
+  tag: "v0.5.0-dev",
+  version: "0.5.0-dev",
+  label: "AirLink V0.5.0-DEV",
   owner: "FlyingRC-Official",
   repository: "AirLink",
   hardwareId: "airlink-c5-mesh-v1",

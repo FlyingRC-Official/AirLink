@@ -52,7 +52,7 @@ digests={f.name:hashlib.sha256(f.read_bytes()).hexdigest() for f in bins}
     'flash_offsets':{'bootloader.bin':'0x2000','partition-table.bin':'0x8000',
                      'ota_data_initial.bin':'0x19000','airlink.bin':'0x30000'}},indent=2)+'\n')
 PY
-cp "$root/docs/PINOUT.md" "$root/docs/FACTORY_TEST.md" "$root/docs/ACCEPTANCE.md" \
+cp "$root/docs/PINOUT.md" "$root/docs/ACCEPTANCE.md" \
    "$root/docs/POWER_WIRING.md" "$root/docs/RECOVERY.md" "$root/CHANGELOG.md" \
    "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$dist/"
 echo "$dist"

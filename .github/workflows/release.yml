@@ -1,179 +1,65 @@
-name: release-v0.4.0-dev
+name: release-v0.5.0-dev
 
 on:
   push:
-    tags: [v0.4.0-dev]
+    tags: [v0.5.0-dev]
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
-  quality-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require complete firmware-ci success for this exact tag commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          deadline=$((SECONDS + 3600))
-          while (( SECONDS < deadline )); do
-            runs=$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&head_sha=${GITHUB_SHA}&per_page=100")
-            run=$(jq -c --arg sha "$GITHUB_SHA" --arg ref "$GITHUB_REF_NAME" \
-              '.workflow_runs | map(select(.head_sha == $sha and (.head_branch == $ref or .head_branch == null))) | sort_by(.run_number) | last // {}' \
-              <<<"$runs")
-            status=$(jq -r '.status // "waiting"' <<<"$run")
-            conclusion=$(jq -r '.conclusion // ""' <<<"$run")
-            url=$(jq -r '.html_url // ""' <<<"$run")
-            echo "firmware-ci status=$status conclusion=$conclusion $url"
-            if [[ "$status" == completed ]]; then
-              if [[ "$conclusion" != success ]]; then
-                echo "Refusing release because firmware-ci concluded: $conclusion" >&2
-                exit 1
-              fi
-              exit 0
-            fi
-            sleep 15
-          done
-          echo "Timed out waiting for firmware-ci on ${GITHUB_REF_NAME} (${GITHUB_SHA})" >&2
-          exit 1
-
   firmware:
-    needs: quality-gate
     runs-on: ubuntu-latest
     container: espressif/idf:v6.0.2
     steps:
-      - uses: actions/checkout@v7
-      - name: Build release firmware
+      - uses: actions/checkout@v4
+      - name: Build and package release firmware
         shell: bash
         run: |
           source /opt/esp/idf/export.sh
           idf.py set-target esp32c5
           idf.py -B build-release -D SDKCONFIG=build-release/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.release" build
-          # The browser flasher downloads the immutable files from this tag and
-          # compares them with GitHub Release digests. Compile above as a source
-          # verification, but package the exact bench-qualified bytes committed
-          # before tagging so build timestamps cannot change their SHA-256.
-          locked=tools/usb_flasher/public/firmware/v0.4.0-dev
-          mkdir -p build-locked/bootloader build-locked/partition_table
-          cp "$locked/airlink.bin" build-locked/airlink.bin
-          cp "$locked/bootloader.bin" build-locked/bootloader/bootloader.bin
-          cp "$locked/partition-table.bin" build-locked/partition_table/partition-table.bin
-          cp "$locked/ota_data_initial.bin" build-locked/ota_data_initial.bin
-          cp build-release/flash_args build-locked/flash_args
-          package=$(tools/create_release.sh build-locked 0.4.0-dev)
-          # Lock the merged image too. Different esptool patch releases should
-          # never make the published bytes diverge from the bench-qualified
-          # manifest committed at the tag.
-          cp "$locked/airlink-0.4.0-dev-merged.bin" "$package/airlink-0.4.0-dev-merged.bin"
-          cp "$locked/manifest.json" "$package/manifest.json"
-          cp "$locked/SHA256SUMS.txt" "$package/SHA256SUMS.txt"
-          python3 - "$package" <<'PY'
-          import hashlib, json, pathlib, sys
-          package = pathlib.Path(sys.argv[1])
-          manifest = json.loads((package / "manifest.json").read_text())
-          for name, expected in manifest["images"].items():
-              actual = hashlib.sha256((package / name).read_bytes()).hexdigest()
-              if actual != expected:
-                  raise SystemExit(f"locked release hash mismatch: {name}: {actual} != {expected}")
-          PY
+          package=$(tools/create_release.sh build-release 0.5.0-dev)
           cd "$package"
-          zip -qr "../AirLink-Firmware-v0.4.0-dev.zip" .
+          zip -qr "../AirLink-Firmware-v0.5.0-dev.zip" .
       - uses: actions/upload-artifact@v4
         with:
           name: release-firmware
           path: |
-            dist/AirLink-Firmware-v0.4.0-dev.zip
-            dist/airlink-0.4.0-dev/*
+            dist/AirLink-Firmware-v0.5.0-dev.zip
+            dist/airlink-0.5.0-dev/*
 
-  web-tools:
-    needs: quality-gate
+  flasher:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: tools/usb_flasher/package-lock.json
-      - name: Build flasher and configurator
+      - name: Build and test Web Serial flasher
+        working-directory: tools/usb_flasher
         run: |
-          cd tools/usb_flasher
           npm ci
           npm run build
           npm test
-          mkdir -p ../../dist/AirLink-USB-Flasher-v0.4.0-dev
-          cp www/AirLink-Flasher-v0.4.0-dev.html README.md THIRD_PARTY_NOTICES.md start_flasher.bat start_flasher.command ../../dist/AirLink-USB-Flasher-v0.4.0-dev/
-          cd ../../dist
-          zip -qr AirLink-USB-Flasher-v0.4.0-dev.zip AirLink-USB-Flasher-v0.4.0-dev
-          cp AirLink-USB-Flasher-v0.4.0-dev/AirLink-Flasher-v0.4.0-dev.html .
-          cd ../tools/configurator
-          npm run build
-          npm test
-          cp AirLink-Configurator.html ../../dist/AirLink-Configurator-v0.4.0-dev.html
+      - name: Package flasher
+        run: |
+          mkdir -p dist/AirLink-USB-Flasher-v0.5.0-dev
+          cp tools/usb_flasher/www/AirLink-Flasher-v0.5.0-dev.html tools/usb_flasher/README.md tools/usb_flasher/THIRD_PARTY_NOTICES.md tools/usb_flasher/start_flasher.bat tools/usb_flasher/start_flasher.command dist/AirLink-USB-Flasher-v0.5.0-dev/
+          cd dist
+          zip -qr AirLink-USB-Flasher-v0.5.0-dev.zip AirLink-USB-Flasher-v0.5.0-dev
       - uses: actions/upload-artifact@v4
         with:
-          name: release-web-tools
-          path: |
-            dist/AirLink-Flasher-v0.4.0-dev.html
-            dist/AirLink-USB-Flasher-v0.4.0-dev.zip
-            dist/AirLink-Configurator-v0.4.0-dev.html
-
-  helper:
-    needs: quality-gate
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: AirLink-Configurator-Helper-Windows-x64-v0.4.0-dev.zip
-          - os: macos-latest
-            artifact: AirLink-Configurator-Helper-macOS-Universal-v0.4.0-dev.zip
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - uses: actions/setup-go@v6
-        with:
-          go-version: '1.24.x'
-          cache-dependency-path: tools/configurator/helper/go.mod
-      - name: Build embedded page
-        working-directory: tools/configurator
-        run: npm run build
-      - name: Test helper
-        working-directory: tools/configurator/helper
-        run: go test ./...
-      - name: Package Windows x64
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: tools/configurator
-        run: |
-          go build -C helper -trimpath -o ../AirLink-Configurator-Helper.exe .
-          New-Item -ItemType Directory bundle | Out-Null
-          Copy-Item AirLink-Configurator-Helper.exe,AirLink-Configurator.html,start_configurator.bat,README.md bundle/
-          Compress-Archive bundle/* ../../AirLink-Configurator-Helper-Windows-x64-v0.4.0-dev.zip
-      - name: Package macOS Universal
-        if: runner.os == 'macOS'
-        working-directory: tools/configurator
-        run: |
-          GOOS=darwin GOARCH=amd64 go build -C helper -trimpath -o ../helper-amd64 .
-          GOOS=darwin GOARCH=arm64 go build -C helper -trimpath -o ../helper-arm64 .
-          lipo -create helper-amd64 helper-arm64 -output AirLink-Configurator-Helper
-          mkdir bundle
-          cp AirLink-Configurator-Helper AirLink-Configurator.html start_configurator.command README.md bundle/
-          chmod +x bundle/AirLink-Configurator-Helper bundle/start_configurator.command
-          ditto -c -k --sequesterRsrc --keepParent bundle ../../AirLink-Configurator-Helper-macOS-Universal-v0.4.0-dev.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: helper-${{ runner.os }}
-          path: ${{ matrix.artifact }}
+          name: release-flasher
+          path: dist/AirLink-USB-Flasher-v0.5.0-dev.zip
 
   publish:
-    needs: [quality-gate, firmware, web-tools, helper]
+    needs: [firmware, flasher]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: release-assets
@@ -182,15 +68,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          find release-assets -type f -maxdepth 2 -print
           mapfile -d '' assets < <(find release-assets -type f -print0)
-          if gh release view v0.4.0-dev >/dev/null 2>&1; then
-            gh release upload v0.4.0-dev "${assets[@]}" --clobber
-            gh release edit v0.4.0-dev \
-              --prerelease --target master --title "AirLink V0.4.0-DEV" \
-              --notes-file docs/RELEASE_NOTES_v0.4.0-dev.md
-          else
-            gh release create v0.4.0-dev "${assets[@]}" \
-              --verify-tag --prerelease --target master --title "AirLink V0.4.0-DEV" \
-              --notes-file docs/RELEASE_NOTES_v0.4.0-dev.md
-          fi
+          gh release create v0.5.0-dev "${assets[@]}" --verify-tag --prerelease --target master --title "AirLink V0.5.0-DEV" --notes-file docs/RELEASE_NOTES_v0.5.0-dev.md

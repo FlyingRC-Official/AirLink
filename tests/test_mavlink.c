@@ -70,7 +70,9 @@ static void test_provision_record(void)
     airlink_provision_record_t record = {
         .magic = AIRLINK_PROVISION_MAGIC,
         .version = AIRLINK_PROVISION_VERSION,
+        .serial_length = 12,
         .password_length = 18,
+        .serial = "AIRLINK-0001",
         .password = "AirLink-Test_2026!",
     };
     record.crc32 = airlink_provision_record_crc(&record);
@@ -82,6 +84,23 @@ static void test_provision_record(void)
     record.password[2] = ' ';
     record.crc32 = airlink_provision_record_crc(&record);
     assert(!airlink_provision_record_valid(&record));
+
+    airlink_provision_record_v1_t legacy = {
+        .magic = AIRLINK_PROVISION_MAGIC,
+        .version = AIRLINK_PROVISION_VERSION_V1,
+        .password_length = 18,
+        .password = "AirLink-Test_2026!",
+    };
+    legacy.crc32 = airlink_provision_record_v1_crc(&legacy);
+    assert(airlink_provision_record_v1_valid(&legacy));
+    assert(airlink_provision_decide(false, false, false, true) ==
+           AIRLINK_PROVISION_ACTION_CREATE_V2_IDENTITY);
+    assert(airlink_provision_decide(true, true, false, true) ==
+           AIRLINK_PROVISION_ACTION_RETRY_V2_CONFIG);
+    assert(airlink_provision_decide(true, false, false, true) ==
+           AIRLINK_PROVISION_ACTION_CONSUME);
+    assert(airlink_provision_decide(false, false, true, false) ==
+           AIRLINK_PROVISION_ACTION_APPLY_V1);
 }
 
 int main(void)

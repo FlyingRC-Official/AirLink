@@ -4,8 +4,8 @@ export const PROVISION = Object.freeze({
   identityAddress: 0x1c000,
   identitySize: 0x10000,
   magic: 0x414c5057,
-  version: 1,
-  recordSize: 77,
+  version: 2,
+  recordSize: 104,
 });
 
 export function passwordValid(password) {
@@ -14,6 +14,11 @@ export function passwordValid(password) {
       const code = character.charCodeAt(0);
       return code >= 0x21 && code <= 0x7e;
     });
+}
+
+export function serialValid(serial) {
+  return typeof serial === "string" && serial.length >= 1 && serial.length <= 24 &&
+    /^[A-Za-z0-9._-]+$/.test(serial);
 }
 
 export function generatePassword(length = 16) {
@@ -32,18 +37,23 @@ export function crc32(data) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function createProvisionImage(password) {
+export function createProvisionImage(serial, password) {
+  if (!serialValid(serial)) throw new Error("序列号必须为 1–24 位字母、数字、点、短横线或下划线");
   if (!passwordValid(password)) throw new Error("密码必须为 12–63 位可打印 ASCII 字符，且不能包含空格");
   const image = new Uint8Array(PROVISION.sectorSize).fill(0xff);
   const record = image.subarray(0, PROVISION.recordSize);
   const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
-  const encoded = new TextEncoder().encode(password);
+  const encodedSerial = new TextEncoder().encode(serial);
+  const encodedPassword = new TextEncoder().encode(password);
   view.setUint32(0, PROVISION.magic, true);
   view.setUint16(4, PROVISION.version, true);
-  view.setUint16(6, encoded.length, true);
-  record.set(encoded, 8);
-  record[8 + encoded.length] = 0;
-  view.setUint32(73, crc32(record.subarray(0, 73)), true);
+  view.setUint16(6, encodedSerial.length, true);
+  view.setUint16(8, encodedPassword.length, true);
+  record.set(encodedSerial, 10);
+  record[10 + encodedSerial.length] = 0;
+  record.set(encodedPassword, 35);
+  record[35 + encodedPassword.length] = 0;
+  view.setUint32(100, crc32(record.subarray(0, 100)), true);
   return image;
 }
 
@@ -80,15 +90,15 @@ export function factoryIdentityPresent(partition) {
   return false;
 }
 
-export function credentialText({ mac, ssid, password, version, createdAt = new Date().toISOString() }) {
+export function credentialText({ serial, mac, ssid, password, version, createdAt = new Date().toISOString() }) {
   return [
     "FlyingRC AirLink 初始凭据",
     `固件版本: ${version}`,
+    `设备序列号: ${serial}`,
     `设备 MAC: ${mac}`,
     `Wi-Fi 名称: ${ssid}`,
     `Wi-Fi 密码: ${password}`,
-    "网页管理员用户: admin",
-    `网页管理员密码: ${password}`,
+    `管理员密码: ${password}`,
     `生成时间: ${createdAt}`,
     "",
     "请妥善保存。设备首次正常启动后会消费并擦除烧录暂存记录。",

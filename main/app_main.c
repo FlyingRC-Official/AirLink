@@ -3,7 +3,6 @@
 #include "airlink_can.h"
 #include "airlink_config.h"
 #include "airlink_diag.h"
-#include "airlink_factory.h"
 #include "airlink_led.h"
 #include "airlink_mesh.h"
 #include "airlink_mesh_config.h"
@@ -11,7 +10,7 @@
 #include "airlink_router.h"
 #include "airlink_uart.h"
 #include "airlink_usb.h"
-#include "airlink_web.h"
+#include "airlink_api.h"
 #include "airlink_wifi.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -32,7 +31,7 @@ typedef struct {
     bool wifi_started;
     bool mesh_mode;
     bool mesh_started;
-    bool web_started;
+    bool api_started;
     bool led_started;
 } service_state_t;
 
@@ -52,7 +51,7 @@ static bool services_healthy(const airlink_wifi_status_t *wifi)
     if (s_services.mesh_mode) {
         if (!s_services.mesh_started || !airlink_mesh_ready()) return false;
     } else {
-        if (!s_services.wifi_started || !s_services.web_started || !airlink_web_ready()) return false;
+        if (!s_services.wifi_started || !s_services.api_started || !airlink_api_ready()) return false;
         if (wifi == NULL || (!wifi->ap_started && !wifi->sta_connected)) return false;
     }
     if (s_services.uart_required &&
@@ -94,11 +93,6 @@ void app_main(void)
      * The USB CLI can open a bounded reset window for esptool when requested. */
     airlink_usb_reset_guard_enable();
     ESP_LOGI(TAG, "image target: %s", airlink_image_hardware_marker());
-#if CONFIG_AIRLINK_BUILD_FACTORY_TEST
-    const bool factory_test = true;
-#else
-    const bool factory_test = false;
-#endif
     airlink_board_probe_t board;
     ESP_ERROR_CHECK(airlink_board_init(&board));
     airlink_config_snapshot_t snapshot;
@@ -121,8 +115,8 @@ void app_main(void)
 
     const bool hardware_ok = board.chip_ok && board.flash_ok && board.psram_ok;
     const bool recovery = !hardware_ok || board.recovery_requested;
-    s_services.mesh_mode = configured_mesh && hardware_ok && !recovery && !factory_test;
-    const airlink_usb_mode_t usb_mode = (recovery || factory_test) ? AIRLINK_USB_LOG_CLI :
+    s_services.mesh_mode = configured_mesh && hardware_ok && !recovery;
+    const airlink_usb_mode_t usb_mode = recovery ? AIRLINK_USB_LOG_CLI :
         s_services.mesh_mode && mesh_snapshot.value.role == AIRLINK_MESH_ROLE_GROUND_ROOT ?
         AIRLINK_USB_MAVLINK :
         s_services.mesh_mode ? AIRLINK_USB_LOG_CLI : snapshot.value.usb_mode;
@@ -154,7 +148,6 @@ void app_main(void)
             .remote_node_id = snapshot.value.can_remote_node_id,
             .serial_id = snapshot.value.can_serial_id,
             .tunnel_enabled = !s_services.mesh_mode && can_fc && !ground_bridge,
-            .factory_mode = factory_test,
         };
         s_services.can_started = service_started("CAN",
                                                   airlink_can_start(&can_options));
@@ -168,9 +161,8 @@ void app_main(void)
     }
     (void)airlink_diag_mark_boot_stage("wifi-started");
     if (!s_services.mesh_mode) {
-        s_services.web_started = service_started("web API", airlink_web_start(recovery, !hardware_ok));
+        s_services.api_started = service_started("management API", airlink_api_start(recovery, !hardware_ok));
     }
-    service_started("factory service", airlink_factory_start(&board, factory_test));
     (void)airlink_diag_mark_boot_stage("services-started");
 
     if (s_services.normal_mode) {

@@ -32,6 +32,8 @@ cc -std=c11 -Wall -Wextra -Werror \
   -o "$out-dronecan"
 "$out-dronecan"
 
+python3 "$root/tests/test_api_protocol.py"
+
 # A blank device has no "airlink" namespace. The initial open must be
 # read-write so first boot can create it before storing the default A/B record.
 if grep -F 'nvs_open(NVS_NAMESPACE, NVS_READONLY' \
@@ -103,11 +105,15 @@ import sys
 source = Path(sys.argv[1]).read_text()
 required = [
     'strcmp(line, "config show")',
-    'strncmp(line, "config set ", 11)',
+    'OK config protocol=1 schema=2 generation=',
+    'END config',
     'strcmp(line, "config reset")',
-    'airlink_config_validate(&config)',
+    'airlink_config_validate(&s_staged_config)',
     'airlink_router_fc_armed()',
-    'OK saved; reboot required',
+    'OK committed; reboot required',
+    'config_transaction_discard()',
+    'cli_protocol=1',
+    'config_schema=2',
     'fc_bytes_in=',
     'config begin',
     'config stage ',
@@ -251,7 +257,7 @@ assert 'airlink_mesh_start(&mesh_snapshot.value' in main
 PY
 
 # DroneCAN tunneling must stay non-blocking, retain independent priorities, and
-# recover a bus-off event without enabling data TX in diagnostic/factory mode.
+# recover a bus-off event while keeping application data TX explicitly gated.
 python3 - \
   "$root/components/airlink_can/airlink_can.c" \
   "$root/components/airlink_config/airlink_config.c" <<'PY'
@@ -263,7 +269,7 @@ for marker in [
     'HIGH_QUEUE_DEPTH', 'NORMAL_QUEUE_DEPTH', 'HIGH_BURST_LIMIT',
     'xQueueSend(queue, &packet, 0)', 'high_queue_drops', 'normal_queue_drops',
     'TWAI_ERROR_BUS_OFF', 'twai_node_recover',
-    'options->tunnel_enabled && !options->factory_mode',
+    's_tunnel_enabled = options->tunnel_enabled',
     'UAVCAN_TUNNEL_PROTOCOL_MAVLINK2', 'NODE_STATUS_INTERVAL_US',
     'UAVCAN_PROTOCOL_GETNODEINFO_ID',
 ]:

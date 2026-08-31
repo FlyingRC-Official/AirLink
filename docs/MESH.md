@@ -8,8 +8,8 @@ returns.
 
 Mesh mode and the V0.3.3 `bridge_role` are mutually exclusive. An air node uses
 UART MAVLink and USB `LOG_CLI`; a ground root disables its flight-controller
-UART/DroneCAN tunnel and normally exposes USB MAVLink. Recovery and
-factory-test firmware always retain their V0.3.3 Wi-Fi/Web behavior.
+UART/DroneCAN tunnel and normally exposes USB MAVLink. Recovery retains the
+page-free private-AP management API.
 
 ## Provisioning
 
@@ -30,13 +30,12 @@ again.
 
 The ground root recognizes `+++AIRLINK-CLI\r\n` in its USB MAVLink stream,
 flushes the frame boundary and switches to protocol-v1 COBS frames delimited by
-zero. Control requests use UTF-8 JSON and OTA chunks use binary payloads. The
-standalone configurator performs this automatically. A close control frame,
+zero. Control requests use UTF-8 JSON and OTA chunks use binary payloads.
+AirLink-GS performs this automatically. A close control frame,
 disconnect, 60 seconds of inactivity, or reboot restores USB MAVLink.
 
-Human-readable rescue commands remain available in `LOG_CLI`, recovery and
-factory-test images: `mesh show`, `mesh create`, `mesh import`, `mesh role`, and
-`mesh reset`.
+Human-readable rescue commands remain available in `LOG_CLI` and recovery:
+`mesh show`, `mesh create`, `mesh import`, `mesh role`, and `mesh reset`.
 
 ## Safety and recovery
 

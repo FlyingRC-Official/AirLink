@@ -33,13 +33,9 @@ typedef struct {
     uint8_t remote_node_id;
     int8_t serial_id;
     bool tunnel_enabled;
-    bool factory_mode;
 } airlink_can_options_t;
 
 esp_err_t airlink_can_start(const airlink_can_options_t *options);
-esp_err_t airlink_can_factory_transmit(uint32_t id, bool extended,
-                                       const uint8_t *data, size_t length);
-esp_err_t airlink_can_factory_set_bitrate(uint32_t bitrate);
 bool airlink_can_ready(void);
 void airlink_can_get_status(airlink_can_status_t *status);
 size_t airlink_can_json(char *output, size_t capacity);

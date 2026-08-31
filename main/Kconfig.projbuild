@@ -2,7 +2,4 @@ menu "AirLink"
 config AIRLINK_FORCE_RECOVERY
     bool "Force recovery-only build"
     default n
-config AIRLINK_BUILD_FACTORY_TEST
-    bool "Enable factory test commands"
-    default n
 endmenu

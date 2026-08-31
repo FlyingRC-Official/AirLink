@@ -68,6 +68,12 @@ typedef struct {
     uint32_t crc32;
 } factory_identity_t;
 
+typedef union {
+    airlink_provision_record_t v2;
+    airlink_provision_record_v1_t v1;
+    uint8_t bytes[sizeof(airlink_provision_record_t)];
+} provision_record_any_t;
+
 _Static_assert(sizeof(airlink_bridge_role_t) == sizeof(uint32_t),
                "bridge role must preserve the schema-v1 reserved field layout");
 _Static_assert(offsetof(airlink_config_t, fc_transport) == sizeof(airlink_config_v1_t),
@@ -325,13 +331,13 @@ static esp_err_t write_record(const airlink_config_t *config, uint32_t generatio
     return err;
 }
 
-static bool provisioning_record_read(airlink_provision_record_t *record)
+static bool provisioning_record_read(provision_record_any_t *record)
 {
     const esp_partition_t *partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, AIRLINK_PROVISION_PARTITION_LABEL);
     if (partition == NULL || partition->size < sizeof(*record) ||
         esp_partition_read(partition, 0, record, sizeof(*record)) != ESP_OK) return false;
-    const uint8_t *bytes = (const uint8_t *)record;
+    const uint8_t *bytes = record->bytes;
     for (size_t i = 0; i < sizeof(*record); ++i) if (bytes[i] != 0xffU) return true;
     return false;
 }
@@ -380,7 +386,7 @@ out:
     nvs_close(nvs);
     ESP_RETURN_ON_ERROR(ret, TAG, "load configuration");
 
-    airlink_provision_record_t provision = {0};
+    provision_record_any_t provision = {0};
     const bool provision_present = provisioning_record_read(&provision);
     factory_identity_t identity;
     const bool identity_present = read_identity(&identity);
@@ -397,6 +403,7 @@ out:
         defaults = true;
     }
     bool credentials_changed = false;
+    bool consume_provision = false;
     if (identity_present) {
         credentials_changed = strcmp(s_config.serial_number, identity.serial_number) != 0;
         strlcpy(s_config.serial_number, identity.serial_number, sizeof(s_config.serial_number));
@@ -409,24 +416,55 @@ out:
         }
     }
     if (provision_present) {
-        if (airlink_provision_record_valid(&provision) && !identity_present) {
-            credentials_changed = strcmp(s_config.ap_password, provision.password) != 0 ||
-                                  strcmp(s_config.admin_password, provision.password) != 0;
-            strlcpy(s_config.ap_password, provision.password, sizeof(s_config.ap_password));
-            strlcpy(s_config.admin_password, provision.password, sizeof(s_config.admin_password));
-            ESP_LOGI(TAG, "applied one-time USB provisioning password");
-        } else if (identity_present) {
-            ESP_LOGI(TAG, "factory identity present; preserving saved credentials");
+        const bool valid_v2 = airlink_provision_record_valid(&provision.v2);
+        const bool valid_v1 = airlink_provision_record_v1_valid(&provision.v1);
+        const bool identity_matches_v2 = identity_present && valid_v2 &&
+            strcmp(identity.serial_number, provision.v2.serial) == 0 &&
+            strcmp(identity.initial_password, provision.v2.password) == 0;
+        const airlink_provision_action_t action = airlink_provision_decide(
+            identity_present, identity_matches_v2, valid_v1, valid_v2);
+        if (action == AIRLINK_PROVISION_ACTION_RETRY_V2_CONFIG) {
+            credentials_changed = strcmp(s_config.serial_number, identity.serial_number) != 0 ||
+                                  strcmp(s_config.ap_password, identity.initial_password) != 0 ||
+                                  strcmp(s_config.admin_password, identity.initial_password) != 0;
+            strlcpy(s_config.serial_number, identity.serial_number, sizeof(s_config.serial_number));
+            strlcpy(s_config.ap_password, identity.initial_password, sizeof(s_config.ap_password));
+            strlcpy(s_config.admin_password, identity.initial_password, sizeof(s_config.admin_password));
+            consume_provision = true;
+            ESP_LOGI(TAG, "retrying provisioning-v2 configuration commit");
+        } else if (action == AIRLINK_PROVISION_ACTION_CONSUME) {
+            ESP_LOGI(TAG, "permanent identity present; one-time provisioning will be consumed");
+            consume_provision = true;
+        } else if (action == AIRLINK_PROVISION_ACTION_CREATE_V2_IDENTITY) {
+            ESP_RETURN_ON_ERROR(write_identity(provision.v2.serial, provision.v2.password), TAG,
+                                "store provisioned identity");
+            credentials_changed = strcmp(s_config.serial_number, provision.v2.serial) != 0 ||
+                                  strcmp(s_config.ap_password, provision.v2.password) != 0 ||
+                                  strcmp(s_config.admin_password, provision.v2.password) != 0;
+            strlcpy(s_config.serial_number, provision.v2.serial, sizeof(s_config.serial_number));
+            strlcpy(s_config.ap_password, provision.v2.password, sizeof(s_config.ap_password));
+            strlcpy(s_config.admin_password, provision.v2.password, sizeof(s_config.admin_password));
+            consume_provision = true;
+            ESP_LOGI(TAG, "stored provisioning-v2 identity and initial credentials");
+        } else if (action == AIRLINK_PROVISION_ACTION_APPLY_V1) {
+            credentials_changed = strcmp(s_config.ap_password, provision.v1.password) != 0 ||
+                                  strcmp(s_config.admin_password, provision.v1.password) != 0;
+            strlcpy(s_config.ap_password, provision.v1.password, sizeof(s_config.ap_password));
+            strlcpy(s_config.admin_password, provision.v1.password, sizeof(s_config.admin_password));
+            consume_provision = true;
+            ESP_LOGI(TAG, "applied legacy provisioning-v1 password without creating identity");
         } else {
-            ESP_LOGW(TAG, "invalid USB provisioning record ignored");
+            ESP_LOGW(TAG, "invalid USB provisioning record retained for recovery");
         }
-        provisioning_record_erase();
     }
     if (defaults) {
         ESP_RETURN_ON_ERROR(write_record(&s_config, s_generation), TAG, "store defaults");
     } else if (credentials_changed || schema_migrated) {
         ESP_RETURN_ON_ERROR(save_locked(&s_config), TAG, "store provisioned credentials");
     }
+    /* Erase the one-time sector only after both permanent identity (for v2)
+     * and the active A/B configuration have been committed successfully. */
+    if (consume_provision) provisioning_record_erase();
     if (snapshot != NULL) {
         *snapshot = (airlink_config_snapshot_t){s_config, s_generation, defaults};
     }

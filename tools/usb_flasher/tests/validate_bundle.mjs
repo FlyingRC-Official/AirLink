@@ -3,7 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  PROVISION, createProvisionImage, crc32, factoryIdentityPresent, passwordValid,
+  PROVISION, createProvisionImage, crc32, factoryIdentityPresent, passwordValid, serialValid,
 } from "../src/provisioning.js";
 import {
   RELEASE, loadReleaseFirmware, rawFirmwareUrl, releaseApiUrl, sha256,
@@ -66,32 +66,6 @@ async function fixture() {
   };
 }
 
-async function packagedFixture() {
-  const firmwareRoot = join(root, "public/firmware", RELEASE.tag);
-  const files = new Map(await Promise.all(RELEASE.files.map(async ({ name }) => [
-    name,
-    new Uint8Array(await readFile(join(firmwareRoot, name))),
-  ])));
-  const manifestBytes = new Uint8Array(await readFile(join(firmwareRoot, "manifest.json")));
-  const assets = [
-    { name: "manifest.json", state: "uploaded", digest: `sha256:${await sha256(manifestBytes)}` },
-    ...await Promise.all([...files].map(async ([name, data]) => ({
-      name, state: "uploaded", digest: `sha256:${await sha256(data)}`,
-    }))),
-  ];
-  return {
-    files,
-    manifestBytes,
-    metadata: {
-      tag_name: RELEASE.tag,
-      draft: false,
-      prerelease: true,
-      html_url: `https://github.com/${RELEASE.owner}/${RELEASE.repository}/releases/tag/${RELEASE.tag}`,
-      assets,
-    },
-  };
-}
-
 function makeFetch(data, overrides = new Map()) {
   return async (url) => {
     if (overrides.has(url)) return overrides.get(url);
@@ -112,11 +86,6 @@ const good = await fixture();
 const loaded = await loadReleaseFirmware({ fetchImpl: makeFetch(good) });
 assert.equal(loaded.manifest.version, RELEASE.version);
 assert.deepEqual(loaded.firmware.map((item) => item.name), RELEASE.files.map((item) => item.name));
-
-const packaged = await packagedFixture();
-const packagedLoaded = await loadReleaseFirmware({ fetchImpl: makeFetch(packaged) });
-assert.equal(packagedLoaded.manifest.version, RELEASE.version);
-assert.deepEqual(packagedLoaded.firmware.map((item) => item.name), RELEASE.files.map((item) => item.name));
 
 const wrongTag = structuredClone(good);
 wrongTag.metadata.tag_name = "v9.9.9";
@@ -220,17 +189,21 @@ for (const descriptor of RELEASE.files) {
   assert.match(releaseSource, new RegExp(`address: 0x${descriptor.address.toString(16)}`));
 }
 
-const provision = createProvisionImage("AirLink-Test_2026!");
+const provision = createProvisionImage("AIRLINK-0001", "AirLink-Test_2026!");
 assert.equal(provision.length, 0x1000);
 const provisionView = new DataView(provision.buffer);
 assert.equal(PROVISION.address, 0x2c000);
 assert.equal(provisionView.getUint32(0, true), 0x414c5057);
-assert.equal(provisionView.getUint16(4, true), 1);
-assert.equal(provisionView.getUint16(6, true), 18);
-assert.equal(provisionView.getUint32(73, true), crc32(provision.subarray(0, 73)));
+assert.equal(provisionView.getUint16(4, true), 2);
+assert.equal(provisionView.getUint16(6, true), 12);
+assert.equal(provisionView.getUint16(8, true), 18);
+assert.equal(new TextDecoder().decode(provision.subarray(10, 22)), "AIRLINK-0001");
+assert.equal(provisionView.getUint32(100, true), crc32(provision.subarray(0, 100)));
+assert.ok(serialValid("AIRLINK-0001"));
+assert.ok(!serialValid("bad serial"));
 assert.ok(passwordValid("AirLink-Test_2026!"));
 assert.ok(!passwordValid("too short"));
-assert.ok(provision.subarray(77).every((byte) => byte === 0xff));
+assert.ok(provision.subarray(104).every((byte) => byte === 0xff));
 
 const initializedIdentityPartition = new Uint8Array(PROVISION.identitySize).fill(0xff);
 initializedIdentityPartition[0] = 0xfe;

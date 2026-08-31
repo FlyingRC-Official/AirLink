@@ -89,7 +89,6 @@ enum {
 static airlink_usb_mode_t s_mode;
 static QueueHandle_t s_tx_queue;
 static TaskHandle_t s_usb_task;
-static airlink_usb_cli_handler_t s_cli_handler;
 static vprintf_like_t s_console_vprintf;
 static bool s_config_transaction_active;
 static airlink_config_t s_staged_config;
@@ -238,6 +237,9 @@ static void status_show(void)
     char output[3072];
     snprintf(output, sizeof(output),
              "OK status\r\n"
+             "cli_protocol=1\r\n"
+             "config_schema=2\r\n"
+             "capabilities=config,wifi_scan,mesh,ota,usb_download\r\n"
              "firmware=%s\r\n"
              "hardware_id=%s\r\n"
              "serial_number=%s\r\n"
@@ -403,9 +405,9 @@ static void config_show(void)
 {
     airlink_config_t config;
     airlink_config_get(&config);
-    char output[768];
+    char output[1024];
     snprintf(output, sizeof(output),
-             "OK config generation=%" PRIu32 "\r\n"
+             "OK config protocol=1 schema=2 generation=%" PRIu32 "\r\n"
              "route_mode=%s\r\n"
              "fc_transport=%s\r\n"
              "uart_baud=%" PRIu32 "\r\n"
@@ -425,7 +427,8 @@ static void config_show(void)
              "can_serial_id=%d\r\n"
              "led_brightness=%u\r\n"
              "serial_number=%s\r\n"
-             "admin_password=%s\r\n",
+             "admin_password=%s\r\n"
+             "END config\r\n",
              airlink_config_generation(), route_mode_name(config.route_mode),
              fc_transport_name(config.fc_transport),
              config.uart_baud, wifi_mode_name(config.wifi_mode),
@@ -441,32 +444,13 @@ static void config_help(void)
 {
     airlink_usb_write_cli(
         "config show\r\n"
-        "config set route_mode mavlink|transparent\r\n"
-        "config set fc_transport uart|dronecan\r\n"
-        "config set uart_baud 57600|115200|230400|460800|921600\r\n"
-        "config set wifi_mode ap|sta|apsta\r\n"
-        "config set wifi_band auto|2g|5g\r\n"
-        "config set ap_ssid VALUE\r\n"
-        "config set ap_password VALUE\r\n"
-        "config set sta_ssid VALUE|-\r\n"
-        "config set sta_password VALUE|-\r\n"
-        "config set udp_port 1..65535\r\n"
-        "config set tcp_port 1..65535\r\n"
-        "config set usb_mode log|mavlink\r\n"
-        "config set bridge_role off|air|ground\r\n"
-        "config set can_bitrate 125000|250000|500000|1000000\r\n"
-        "config set can_node_id 1..127\r\n"
-        "config set can_remote_node_id 1..127\r\n"
-        "config set can_serial_id 0..15\r\n"
-        "config set led_brightness 0..100\r\n"
-        "config set admin_password VALUE\r\n"
         "config begin\r\n"
-        "config stage KEY VALUE\r\n"
+        "config stage KEY VALUE  (use '-' to clear optional STA values)\r\n"
         "config validate\r\n"
         "config commit\r\n"
         "config abort\r\n"
         "config reset\r\n"
-        "Legacy set saves immediately; transaction commit saves once. Reboot required.\r\n");
+        "keys: route_mode fc_transport uart_baud wifi_mode wifi_band ap_ssid ap_password sta_ssid sta_password udp_port tcp_port usb_mode bridge_role can_bitrate can_node_id can_remote_node_id can_serial_id led_brightness admin_password\r\n");
 }
 
 static bool config_apply_value(airlink_config_t *config, const char *arguments,
@@ -566,29 +550,6 @@ static bool config_apply_value(airlink_config_t *config, const char *arguments,
     return value_ok;
 }
 
-static void config_set(const char *arguments)
-{
-    if (airlink_router_fc_armed()) {
-        airlink_usb_write_cli("ERR flight controller armed\r\n");
-        return;
-    }
-    airlink_config_t config;
-    airlink_config_get(&config);
-    bool recognized = false;
-    const bool value_ok = config_apply_value(&config, arguments, &recognized);
-
-    if (!recognized) {
-        airlink_usb_write_cli("ERR unknown config key; use config help\r\n");
-    } else if (!value_ok || !airlink_config_validate(&config) ||
-               bridge_conflicts_with_mesh(&config)) {
-        airlink_usb_write_cli("ERR invalid value or incomplete configuration\r\n");
-    } else if (airlink_config_save(&config) != ESP_OK) {
-        airlink_usb_write_cli("ERR could not save configuration\r\n");
-    } else {
-        airlink_usb_write_cli("OK saved; reboot required\r\n");
-    }
-}
-
 static void config_transaction_expire(void)
 {
     if (s_config_transaction_active && esp_timer_get_time() > s_config_transaction_deadline_us) {
@@ -597,14 +558,16 @@ static void config_transaction_expire(void)
     }
 }
 
+static void config_transaction_discard(void)
+{
+    memset(&s_staged_config, 0, sizeof(s_staged_config));
+    s_config_transaction_active = false;
+}
+
 static void config_transaction(const char *line)
 {
     config_transaction_expire();
     if (strcmp(line, "config begin") == 0) {
-        if (airlink_router_fc_armed()) {
-            airlink_usb_write_cli("ERR flight controller armed\r\n");
-            return;
-        }
         airlink_config_get(&s_staged_config);
         s_config_transaction_active = true;
         s_config_transaction_deadline_us = esp_timer_get_time() + CONFIG_TRANSACTION_TIMEOUT_US;
@@ -640,13 +603,11 @@ static void config_transaction(const char *line)
         } else if (airlink_config_save(&s_staged_config) != ESP_OK) {
             airlink_usb_write_cli("ERR could not save configuration\r\n");
         } else {
-            memset(&s_staged_config, 0, sizeof(s_staged_config));
-            s_config_transaction_active = false;
+            config_transaction_discard();
             airlink_usb_write_cli("OK committed; reboot required\r\n");
         }
     } else if (strcmp(line, "config abort") == 0) {
-        memset(&s_staged_config, 0, sizeof(s_staged_config));
-        s_config_transaction_active = false;
+        config_transaction_discard();
         airlink_usb_write_cli("OK transaction aborted\r\n");
     }
 }
@@ -663,8 +624,6 @@ static void handle_config(const char *line)
                strcmp(line, "config commit") == 0 ||
                strcmp(line, "config abort") == 0) {
         config_transaction(line);
-    } else if (strncmp(line, "config set ", 11) == 0) {
-        config_set(line + 11);
     } else if (strcmp(line, "config reset") == 0) {
         if (airlink_router_fc_armed()) {
             airlink_usb_write_cli("ERR flight controller armed\r\n");
@@ -1133,7 +1092,7 @@ esp_err_t airlink_usb_write_cli(const char *text)
 static void handle_builtin(const char *line)
 {
     if (strcmp(line, "help") == 0) {
-        airlink_usb_write_cli("commands: help, status, config ..., mesh ..., wifi scan, ota begin <bytes> <sha256>, reboot, usb log, usb mavlink, usb download, factory ...\r\n");
+        airlink_usb_write_cli("commands: help, status, config ..., wifi scan, mesh show|create|import|role|reset, ota begin <bytes> <sha256>, reboot, usb download\r\n");
     } else if (strcmp(line, "status") == 0) {
         status_show();
     } else if (strncmp(line, "ota begin ", 10) == 0) {
@@ -1251,23 +1210,6 @@ static void handle_builtin(const char *line)
         airlink_usb_write_cli("OK rebooting\r\n");
         vTaskDelay(pdMS_TO_TICKS(50));
         airlink_usb_system_restart();
-    } else if (strcmp(line, "usb log") == 0 || strcmp(line, "usb mavlink") == 0) {
-        if (airlink_router_fc_armed()) {
-            airlink_usb_write_cli("ERR flight controller armed\r\n");
-            return;
-        }
-        airlink_config_t config; airlink_config_get(&config);
-        config.usb_mode = strcmp(line, "usb mavlink") == 0 ? AIRLINK_USB_MAVLINK : AIRLINK_USB_LOG_CLI;
-        if (airlink_config_save(&config) == ESP_OK) {
-            (void)airlink_diag_mark_boot_stage("restarting");
-            airlink_usb_write_cli("OK mode saved; rebooting\r\n");
-            vTaskDelay(pdMS_TO_TICKS(50));
-            airlink_usb_system_restart();
-        } else {
-            airlink_usb_write_cli("ERR could not save mode\r\n");
-        }
-    } else if (s_cli_handler != NULL) {
-        s_cli_handler(line);
     } else {
         airlink_usb_write_cli("ERR unknown command\r\n");
     }
@@ -1284,9 +1226,16 @@ static void usb_task(void *argument)
     size_t rpc_encoded_length = 0;
     usb_packet_t packet;
     airlink_escape_matcher_t escape = {0};
+    bool previously_connected = usb_serial_jtag_is_connected();
     if (s_mode == AIRLINK_USB_LOG_CLI) airlink_usb_write_cli("\r\nAirLink LOG_CLI ready. Type help.\r\n> ");
     while (true) {
         ESP_ERROR_CHECK(esp_task_wdt_reset());
+        const bool connected = usb_serial_jtag_is_connected();
+        if (previously_connected && !connected) {
+            config_transaction_discard();
+            line_length = 0;
+        }
+        previously_connected = connected;
         if (s_usb_download_deadline_us > 0 &&
             esp_timer_get_time() >= s_usb_download_deadline_us) {
             usb_reset_protection(true);
@@ -1423,7 +1372,6 @@ esp_err_t airlink_usb_start(airlink_usb_mode_t mode)
     return ESP_OK;
 }
 
-void airlink_usb_set_cli_handler(airlink_usb_cli_handler_t handler) { s_cli_handler = handler; }
 bool airlink_usb_connected(void) { return usb_serial_jtag_is_connected(); }
 bool airlink_usb_ready(void)
 {

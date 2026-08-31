@@ -1,11 +1,10 @@
 # FlyingRC AirLink C5 Mesh V1
 
-AirLink is an ESP32-C5 telemetry gateway for ArduPilot-compatible flight
-controllers. V0.4 adds a routerless, fixed-root ESP-WIFI-MESH transport for one
+AirLink is an ESP32-C5 telemetry gateway for MAVLink flight controllers.
+V0.5 keeps the fixed-root ESP-WIFI-MESH transport introduced in V0.4 for one
 ground unit and up to eight airborne UART MAVLink nodes while preserving the
-V0.3.3 Wi-Fi gateway/bridge and DroneCAN modes.
-The bilingual single-file UI is deterministically gzip-compressed and embedded
-in the application image.
+Wi-Fi gateway/bridge and DroneCAN modes. Device management is API-only; no HTML
+application is embedded in the firmware.
 
 ## System overview
 
@@ -20,9 +19,9 @@ flowchart LR
     Air["Air role: UART + AP"] <--> Ground["Ground role: STA + USB"]
     CAN["DroneCAN node/service"] --> Diagnostics["Status and diagnostics"]
     Router --> Diagnostics
-    Diagnostics --> Web["Web UI / API"]
-    Web --> Config["NVS configuration"]
-    Web --> OTA["A/B OTA"]
+    Diagnostics --> API["AP-only management API"]
+    API --> Config["NVS configuration"]
+    API --> OTA["A/B OTA"]
 ```
 
 ### Core functions
@@ -51,40 +50,39 @@ flowchart LR
 - Uses one universal firmware image for gateway, air-bridge and ground-bridge
   roles. The air unit carries flight-controller UART over an authenticated AP;
   the ground unit reconnects as a STA and presents the link as USB MAVLink.
-- Serves an authenticated bilingual Web UI for status, configuration, client
-  inspection, CAN diagnostics, reboot, factory reset and OTA.
+- Serves a page-free management API for status, configuration, client
+  inspection, CAN diagnostics, reboot, reset and OTA on the private AP only.
 - Stores configuration in CRC-protected, generation-numbered NVS A/B records.
   The factory serial number and initial password use a separate identity
-  partition. Blank devices can consume a CRC-protected one-time password record
-  written by the cross-platform USB flasher; the record is erased after first use.
+  partition. Blank devices consume a provisioning-v2 serial/password record
+  written by the Web Serial flasher. It is erased only after identity and
+  active configuration are committed; provisioning v1 remains readable.
 - Publishes DroneCAN `NodeStatus`, responds to `GetNodeInfo`, tunnels MAVLink2
   with 120-byte chunks and keepalives, and reports peer, queue and TWAI error
-  state. Passive observation and bus-off recovery remain available in UART
-  mode; raw CAN transmission and bitrate switching remain factory-test-only.
+  state. Passive observation and bus-off recovery remain available in UART mode.
 - Provides rollback-capable A/B OTA with hardware, image, project-name and
   SHA-256 checks. A new image is confirmed only after a 30-second healthy
   service window.
 - Protects configuration changes, reboot, reset, OTA and USB mode changes while
   an armed flight-controller heartbeat is latched.
 
-### Web API
+### Management API v2
 
-All API routes require HTTP Basic authentication using user `admin` and the
-per-board administrator password.
+Management is accepted only on `192.168.4.1`, the private AirLink AP address.
+STA interfaces expose telemetry only. A client opens a challenge with a random
+client nonce, proves knowledge of the administrator password, then signs each
+request with a derived temporary key, increasing counter and body SHA-256.
+Sessions expire after ten idle minutes; passwords and Mesh fleet keys are never
+returned.
 
 | Method | Route | Function |
 | --- | --- | --- |
-| `GET` | `/api/v1/capabilities` | API/schema version, hardware identity, firmware and feature flags |
-| `GET` | `/api/v1/status` | Firmware, flight-controller, Wi-Fi, UART, heap and reset status |
-| `GET` | `/api/v1/config` | Read the active configuration |
-| `POST` | `/api/v1/config/validate` | Validate and normalize a full configuration without saving it |
-| `PUT` | `/api/v1/config` | Validate and save configuration; reboot required |
-| `GET` | `/api/v1/clients` | List active UDP and TCP clients |
-| `GET` | `/api/v1/can` | Read TWAI counters and active DroneCAN nodes |
-| `POST` | `/api/v1/wifi/scan` | Return up to 32 de-duplicated nearby networks; blocked while armed or updating |
-| `POST` | `/api/v1/actions/reboot` | Reboot the device |
-| `POST` | `/api/v1/actions/factory-reset` | Restore generated per-board defaults and reboot |
-| `POST` | `/api/v1/ota` | Validate, write and activate an OTA application image |
+| `POST` | `/api/v2/session/challenge`, `/api/v2/session/auth` | Establish a temporary authenticated session |
+| `GET` | `/api/v2/capabilities`, `/api/v2/status` | Capabilities and runtime status |
+| `GET/PUT` | `/api/v2/config` | Read non-secret settings or atomically save validated settings |
+| `POST` | `/api/v2/config/validate`, `/api/v2/wifi/scan` | Validate without saving or scan networks |
+| `GET` | `/api/v2/clients`, `/api/v2/can`, `/api/v2/diagnostics` | Runtime diagnostics |
+| `POST` | `/api/v2/reboot`, `/api/v2/reset`, `/api/v2/ota` | Disarmed-only maintenance actions |
 
 ## Hardware target
 
@@ -92,7 +90,7 @@ per-board administrator password.
 - ESP-IDF: exactly 6.0.2 for the first qualified release
 - Hardware ID: `airlink-c5-mesh-v1`
 - Default AP: `FlyingRC-AirLink-XXXX`, `192.168.4.1`; password is generated per
-  device and must be saved by factory test or the cross-platform USB flasher
+  device and must be saved from the cross-platform USB flasher
 - MAVLink: UDP 14550, TCP 5760
 
 In AP+STA mode telemetry sockets listen only on the private AirLink AP address;
@@ -116,10 +114,9 @@ idf.py set-target esp32c5
 idf.py build
 ```
 
-Factory-test and recovery variants use additional defaults:
+The recovery variant uses an additional default:
 
 ```sh
-idf.py -B build-factory -D SDKCONFIG=build-factory/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.factory-test" build
 idf.py -B build-recovery -D SDKCONFIG=build-recovery/sdkconfig -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci.recovery" build
 ```
 
@@ -128,51 +125,35 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ### Local USB flasher
 
-The `v0.4.0-dev` release includes a single-file local Web Serial flasher for
-Windows and macOS. Extract `AirLink-USB-Flasher-v0.4.0-dev.zip`, then run
+The `v0.5.0-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.5.0-dev.zip`, then run
 `start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
 Edge is required; Safari is not supported. The page downloads only the fixed
-`v0.4.0-dev` firmware from the matching GitHub tag and accepts it only when the
+`v0.5.0-dev` firmware from the matching GitHub tag and accepts it only when the
 manifest SHA-256 and GitHub Release digest both match.
 
 The flasher never performs a whole-chip erase and never writes normal NVS or
-factory identity. A blank device receives only the one-time password record at
-`0x2C000`. Passwords, logs and USB data remain local to the browser.
+permanent identity. A blank device receives a provisioning-v2 record containing
+the entered serial number and initial password at `0x2C000`. Passwords, logs
+and USB data remain local to the browser.
 
-### Local Wi-Fi / USB configurator
+### AirLink-GS management
 
-`tools/configurator/AirLink-Configurator.html` is a zero-dependency, single-file
-local Web configurator for Windows and macOS. It presents the same parameter
-form for both transports:
-
-- Wi-Fi connects directly to the authenticated `/api/v1` device API. The
-  firmware accepts CORS preflight for the standalone local-file origin.
-- USB uses Web Serial and the release-firmware `LOG_CLI`; a unit configured for
-  USB MAVLink is temporarily switched to its CLI with the supported escape
-  sequence.
-
-Run `start_configurator.bat` on Windows or `start_configurator.command` on
-macOS. No local server or Node.js installation is required. Chrome or Edge is
-required. Credentials and device data stay in local memory and are not stored
-in browser storage.
+Configuration, diagnostics and upgrades are provided by the separate
+AirLink-GS desktop application. USB settings use the transaction-based text
+CLI; Wi-Fi settings use management API v2 through the private AirLink AP.
+The byte-level contract for both interfaces is documented in
+[management protocols](docs/MANAGEMENT_PROTOCOLS.md).
 
 On a Mesh ground root, sending `+++AIRLINK-CLI\r\n` enters the COBS-framed
 binary management session and temporarily pauses the USB MAVLink endpoint. A
 close frame, serial disconnect, 60-second idle timeout or reboot restores USB
 MAVLink. See [Mesh operation and recovery](docs/MESH.md).
 
-For discovery, batch deployment and proxy access to older firmware, run the
-optional native helper package. It embeds the same HTML, binds only to
-`127.0.0.1`, generates a new random session token at every start and exposes
-`/helper/v1/health`, `/helper/v1/devices` and an AirLink-API-only private-network
-proxy. AirLink devices also answer the rate-limited UDP probe
-`AIRLINK_DISCOVER_V1\n` with credential-free identity and address metadata.
-
 ## Operation
 
-1. Connect to the AP using the per-board password recorded by factory test or
-   downloaded from the cross-platform USB flasher.
-2. Open <http://192.168.4.1> and sign in as `admin` with the same password.
+1. Connect to the AP using the per-board password downloaded from the flasher.
+2. Open AirLink-GS and connect over USB or the private AP.
 3. Configure the flight controller UART for MAVLink at the selected baud rate.
 4. QGroundControl normally discovers UDP 14550. Mission Planner can use UDP
    14550 or TCP `192.168.4.1:5760`.
@@ -204,8 +185,8 @@ reboot
 
 The transaction is held only in RAM until `config commit`; validation failure,
 timeout, disconnect or `config abort` leaves the active configuration unchanged.
-Legacy `config set` and `config reset` remain available and save to the
-CRC-protected NVS A/B records. New settings take effect after `reboot`.
+Only `config commit` and `config reset` write the CRC-protected NVS A/B records.
+New settings take effect after `reboot`.
 Configuration writes and reboot remain
 blocked while an armed flight-controller heartbeat is latched. `config show`
 includes credentials because USB is treated as a local physical management
@@ -214,8 +195,8 @@ interface; protect physical access to deployed devices.
 ### Crash logs and collection
 
 Release firmware stores panic and task-watchdog coredumps, including the ESP-IDF
-log ring, in the dedicated flash partition at `0x630000`. `status` and the Web
-diagnostic API report `coredump_present`, `coredump_size`, `previous_boot_stage`
+log ring, in the dedicated flash partition at `0x630000`. `status` and the
+management API report `coredump_present`, `coredump_size`, `previous_boot_stage`
 and `boot_stage`. Boot-stage breadcrumbs are persisted without credentials so a
 subsequent physical restart can show which service was last reached. Routine
 `ESP_LOG` output remains live-only on USB `LOG_CLI` and the independent UART0
@@ -246,9 +227,12 @@ Both units run the same firmware. Configure the unit attached to the flight
 controller as the air side:
 
 ```text
-config set route_mode mavlink
-config set wifi_band 2g
-config set bridge_role air
+config begin
+config stage route_mode mavlink
+config stage wifi_band 2g
+config stage bridge_role air
+config validate
+config commit
 reboot
 ```
 
@@ -256,16 +240,19 @@ On the USB-attached ground unit, copy the air unit's AP SSID and password, then
 select the ground role:
 
 ```text
-config set sta_ssid AIR_UNIT_SSID
-config set sta_password AIR_UNIT_PASSWORD
-config set wifi_band 2g
-config set bridge_role ground
+config begin
+config stage sta_ssid AIR_UNIT_SSID
+config stage sta_password AIR_UNIT_PASSWORD
+config stage wifi_band 2g
+config stage bridge_role ground
+config validate
+config commit
 reboot
 ```
 
 Selecting `air` automatically selects Wi-Fi AP plus USB `LOG_CLI`; selecting
-`ground` selects Wi-Fi STA plus USB MAVLink. The Web UI exposes the same role
-selector for later configuration over Wi-Fi. In ground mode, writing the exact
+`ground` selects Wi-Fi STA plus USB MAVLink. AirLink-GS exposes the same role
+selector. In ground mode, writing the exact
 ASCII sequence `+++AIRLINK-CLI\r\n` to USB temporarily switches that boot into
 the local CLI; reboot restores the configured USB MAVLink mode.
 
@@ -289,10 +276,9 @@ documented nonzero limit.
 
 | Mode | Telemetry | Management behavior |
 | --- | --- | --- |
-| Release | UART, UDP/TCP and optional USB MAVLink; passive DroneCAN | Normal authenticated Web UI and OTA |
-| Recovery | UART and CAN disabled; USB forced to `LOG_CLI` | Wi-Fi and Web recovery access remain available |
-| Hardware mismatch | UART and CAN disabled | Web UI is read-only |
-| Factory test | Normal interfaces plus test-only CAN TX and BLE advertising | USB CLI exposes identity, UART, CAN, Wi-Fi, LED and BOOT tests |
+| Release | UART, UDP/TCP and optional USB MAVLink; passive DroneCAN | AP-only authenticated API and OTA |
+| Recovery | UART and CAN disabled; USB forced to `LOG_CLI` | AP-only recovery API remains available |
+| Hardware mismatch | UART and CAN disabled | Management API is read-only |
 
 ## Status LEDs
 
@@ -306,13 +292,13 @@ two brightness levels; they are not smooth fades.
 | Green pulse | Flight-controller MAVLink is being received |
 | White blink | OTA upload or flash write is in progress |
 | Red blink | Latched error, such as OTA failure or CAN bus-off |
-| Solid blue | Connected/test indication; currently used mainly by factory test |
+| Solid blue | Connected or explicit service indication |
 | Solid purple | Reserved mesh indication; not selected by the current automatic state machine |
 
 The separate ACT LED pulses for approximately 20 ms when UART or CAN data is
 received, with pulses rate-limited to one every 50 ms. RGB brightness defaults
-to 25 percent and is configurable in the Web UI. A red error remains latched
-until it is explicitly cleared by factory test or the device restarts.
+to 25 percent and is configurable through `config` or AirLink-GS. A red error remains latched
+until the device restarts.
 
 ## FreeRTOS architecture
 
@@ -336,7 +322,8 @@ UART queue; normal traffic drops oldest first under congestion.
 Host tests and an ESP-IDF build verify source and build integration. They do
 not prove USB signal integrity, RF range, multi-source 5V safety, CAN
 termination, transceiver standby wiring or flight performance. Every V1 board
-must pass [factory testing](docs/FACTORY_TEST.md) before powered flight tests.
+must pass the external production and bench checks in
+[the acceptance guide](docs/ACCEPTANCE.md) before powered flight tests.
 
 ## Security
 
