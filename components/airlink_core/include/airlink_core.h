@@ -17,8 +17,11 @@
 #define AIRLINK_ENDPOINT_ID_USB 2U
 #define AIRLINK_ENDPOINT_ID_BRIDGE 3U
 #define AIRLINK_ENDPOINT_ID_FC_CAN 4U
+#define AIRLINK_ENDPOINT_ID_MESH_GCS 5U
 #define AIRLINK_ENDPOINT_ID_UDP_BASE 16U
 #define AIRLINK_ENDPOINT_ID_TCP_BASE 32U
+#define AIRLINK_ENDPOINT_ID_MESH_VEHICLE_BASE 48U
+#define AIRLINK_MAX_MESH_VEHICLES 8U
 
 typedef enum {
     AIRLINK_ROUTE_MAVLINK = 0,
@@ -60,7 +63,17 @@ typedef enum {
     AIRLINK_ENDPOINT_USB = 3,
     AIRLINK_ENDPOINT_BRIDGE = 4,
     AIRLINK_ENDPOINT_CAN = 5,
+    AIRLINK_ENDPOINT_MESH = 6,
 } airlink_endpoint_type_t;
+
+/* Routing direction is deliberately independent from the transport.  A TCP
+ * bridge is vehicle-side on a ground unit but GCS-side on an air unit, and a
+ * mesh root owns several independent vehicle endpoints. */
+typedef enum {
+    AIRLINK_ENDPOINT_DIRECTION_VEHICLE = 0,
+    AIRLINK_ENDPOINT_DIRECTION_GCS = 1,
+    AIRLINK_ENDPOINT_DIRECTION_INTERNAL = 2,
+} airlink_endpoint_direction_t;
 
 typedef struct {
     uint64_t bytes_in;

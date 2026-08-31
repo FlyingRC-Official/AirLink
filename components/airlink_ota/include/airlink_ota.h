@@ -11,10 +11,16 @@ void airlink_ota_services_ready(bool ready);
 void airlink_ota_health_heartbeat(bool healthy);
 esp_err_t airlink_ota_http_upload(httpd_req_t *request);
 esp_err_t airlink_ota_stream_begin(size_t image_size, const uint8_t expected_sha256[32]);
+esp_err_t airlink_ota_stream_begin_versioned(size_t image_size,
+                                             const uint8_t expected_sha256[32],
+                                             const char *expected_version);
 esp_err_t airlink_ota_stream_write(const void *data, size_t length);
+esp_err_t airlink_ota_stream_verify(void);
+esp_err_t airlink_ota_stream_activate(void);
 esp_err_t airlink_ota_stream_finish(void);
 void airlink_ota_stream_abort(void);
 bool airlink_ota_stream_active(void);
+bool airlink_ota_stream_staged(void);
 size_t airlink_ota_stream_remaining(void);
 bool airlink_ota_in_progress(void);
 const char *airlink_ota_running_partition(void);

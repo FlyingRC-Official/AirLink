@@ -16,6 +16,6 @@ const style = (await readFile(join(output, styleMatch[1].slice(2)), "utf8")).rep
 html = html.replace(styleMatch[0], `<style>${style}</style>`);
 html = html.replace(scriptMatch[0], `<script type="module">${script}</script>`);
 
-const destination = join(output, "AirLink-Flasher-v0.3.3-dev.html");
+const destination = join(output, "AirLink-Flasher-v0.4.0-dev.html");
 await writeFile(destination, html);
 console.log(destination);

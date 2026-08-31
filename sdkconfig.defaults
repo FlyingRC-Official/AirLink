@@ -27,5 +27,8 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=128
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_APP_RETRIEVE_LEN_ELF_SHA=16
-CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="0.3.3-dev"
+# The application descriptor version is supplied by PROJECT_VER in the root
+# CMakeLists.txt, which reads the repository's single version.txt source.
+# CONFIG_APP_PROJECT_VER_FROM_CONFIG must remain disabled or sdkconfig would
+# silently override the release version with stale text.
+# CONFIG_APP_PROJECT_VER_FROM_CONFIG is not set

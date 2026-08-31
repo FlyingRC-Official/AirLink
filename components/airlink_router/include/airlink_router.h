@@ -13,6 +13,7 @@ typedef esp_err_t (*airlink_router_send_fn)(const uint8_t *data, size_t length,
 typedef struct {
     uint8_t id;
     airlink_endpoint_type_t type;
+    airlink_endpoint_direction_t direction;
     airlink_router_send_fn send;
     void *context;
     const char *name;
@@ -25,4 +26,5 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
 void airlink_router_set_mode(airlink_route_mode_t mode);
 bool airlink_router_fc_armed(void);
 bool airlink_router_fc_seen(void);
+bool airlink_router_fc_system_id(uint8_t *system_id);
 void airlink_router_get_stats(uint8_t endpoint_id, airlink_endpoint_stats_t *stats);

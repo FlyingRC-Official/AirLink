@@ -13,7 +13,7 @@
       <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="brand-copy">
         <strong>FLYINGRC</strong>
-        <span>AIRLINK CONFIGURATOR · V0.3.3-DEV</span>
+        <span>AIRLINK CONFIGURATOR · V0.4.0-DEV</span>
       </div>
       <button class="header-button" id="languageButton" type="button" aria-label="Switch language">EN</button>
       <div class="connection-pill offline" id="connectionPill"><i></i><span>未连接</span></div>
@@ -172,6 +172,21 @@
           <div class="pair-fields"><input id="manifestFile" type="file" accept="application/json,.json" /><input id="firmwareFile" type="file" accept="application/octet-stream,.bin" /></div>
           <div class="tool-actions"><button id="otaGithubButton" type="button" disabled>从 GitHub 升级</button><button id="otaButton" type="button" disabled>使用本地文件升级</button></div>
           <progress id="otaProgress" max="1" value="0"></progress><span id="otaState">等待选择文件</span>
+        </article>
+        <article class="panel tool-card mesh-console" id="meshCard" hidden>
+          <p class="eyebrow">MESH CONTROL</p><h2>Mesh 节点与拓扑</h2>
+          <p>仅通过地面根 USB 管理。机群密钥只在显式导出配网包时返回。</p>
+          <div class="mesh-provision-actions">
+            <input id="meshProvisionFile" type="file" accept="application/json,.json" />
+            <button id="meshCreateButton" type="button">创建地面根网络</button>
+            <button id="meshImportAirButton" type="button">导入为空中节点</button>
+            <button id="meshUpdateButton" type="button">全网更新配网</button>
+            <button id="meshResetButton" type="button">关闭 / 重置 Mesh</button>
+          </div>
+          <div class="mesh-summary" id="meshSummary"></div>
+          <label class="mesh-root-target"><input id="meshIncludeRoot" type="checkbox" checked /> OTA 包含地面根（最后激活）</label>
+          <div class="mesh-node-list" id="meshNodeList"></div>
+          <div class="tool-actions"><button id="meshRefreshButton" type="button">刷新节点</button><button id="meshExportButton" type="button">导出配网包</button></div>
         </article>
       </section>
 

@@ -2,6 +2,47 @@ import { configToCliOperations, parseCliConfig } from "./config-model.js";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+export function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+export function cobsEncode(input) {
+  const output = new Uint8Array(input.length + Math.ceil(input.length / 254) + 2);
+  let codeIndex = 0; let write = 1; let code = 1;
+  for (const byte of input) {
+    if (byte === 0) { output[codeIndex] = code; codeIndex = write; write += 1; code = 1; }
+    else {
+      output[write] = byte; write += 1; code += 1;
+      if (code === 0xff) { output[codeIndex] = code; codeIndex = write; write += 1; code = 1; }
+    }
+  }
+  output[codeIndex] = code;
+  return output.subarray(0, write);
+}
+
+export function cobsDecode(input) {
+  const output = new Uint8Array(input.length); let read = 0; let write = 0;
+  while (read < input.length) {
+    const code = input[read]; read += 1;
+    if (!code || read + code - 1 > input.length) throw new Error("COBS 帧损坏");
+    for (let index = 1; index < code; index += 1) { output[write] = input[read]; write += 1; read += 1; }
+    if (code !== 0xff && read < input.length) { output[write] = 0; write += 1; }
+  }
+  return output.subarray(0, write);
+}
+
+const RPC = Object.freeze({
+  NETWORK_READ: 1, NETWORK_CREATE: 2, NETWORK_UPDATE: 3,
+  NODE_LIST: 16, NODE_APPROVE: 17, NODE_REMOVE: 18, NODE_STATUS: 19,
+  CONFIG_READ: 32, CONFIG_WRITE: 33, REBOOT: 48,
+  OTA_BEGIN: 64, OTA_CHUNK: 65, OTA_COMMIT: 66, OTA_ABORT: 67,
+});
+
 export class WifiTransport {
   constructor({ baseUrl, username, password, onLog }) {
     this.baseUrl = /^https?:\/\//i.test(baseUrl) ? baseUrl.replace(/\/$/, "") : `http://${baseUrl.replace(/\/$/, "")}`;
@@ -92,6 +133,10 @@ export class UsbTransport {
     this.type = "usb";
     this.buffer = "";
     this.connected = false;
+    this.binary = false;
+    this.binaryFrame = [];
+    this.rpcPending = new Map();
+    this.nextRequestId = 1;
   }
 
   async write(text) {
@@ -105,13 +150,59 @@ export class UsbTransport {
       while (this.reader) {
         const { value, done } = await this.reader.read();
         if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        this.buffer += text;
-        this.onRaw(text);
+        if (this.binary) this.consumeBinary(value);
+        else {
+          const text = decoder.decode(value, { stream: true });
+          this.buffer += text;
+          this.onRaw(text);
+        }
       }
     } catch (error) {
       if (this.connected) this.onLog(`USB 读取中断：${error.message}`, "error");
     }
+  }
+
+  consumeBinary(bytes) {
+    for (const byte of bytes) {
+      if (byte !== 0) { this.binaryFrame.push(byte); continue; }
+      if (!this.binaryFrame.length) continue;
+      try {
+        const frame = cobsDecode(Uint8Array.from(this.binaryFrame));
+        this.binaryFrame = [];
+        if (frame.length < 20) throw new Error("RPC 响应过短");
+        const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+        const payloadLength = view.getUint32(12, true);
+        if (view.getUint8(0) !== 1 || view.getUint8(1) !== 2 || frame.length !== 16 + payloadLength + 4) throw new Error("RPC 响应头无效");
+        const expected = view.getUint32(16 + payloadLength, true);
+        if (crc32(frame.subarray(0, 16 + payloadLength)) !== expected) throw new Error("RPC CRC 校验失败");
+        const requestId = view.getUint32(8, true); const pending = this.rpcPending.get(requestId);
+        if (!pending) continue;
+        this.rpcPending.delete(requestId); clearTimeout(pending.timer);
+        const status = view.getUint16(6, true); const payload = frame.subarray(16, 16 + payloadLength);
+        if (status !== 0) pending.reject(new Error(`Mesh RPC ${view.getUint16(2, true)} 失败，错误码 ${status}`));
+        else pending.resolve(payload);
+      } catch (error) { this.onLog(`Mesh RPC 帧错误：${error.message}`, "error"); this.binaryFrame = []; }
+    }
+  }
+
+  async rpc(method, payload = {}, { raw = false, timeout = 8000 } = {}) {
+    if (!this.binary) throw new Error("设备未进入 Mesh 管理会话");
+    const body = raw ? payload : new TextEncoder().encode(JSON.stringify(payload));
+    const requestId = this.nextRequestId++ >>> 0;
+    const frame = new Uint8Array(16 + body.length + 4); const view = new DataView(frame.buffer);
+    view.setUint8(0, 1); view.setUint8(1, 1); view.setUint16(2, method, true);
+    view.setUint16(4, raw ? 1 : 0, true); view.setUint16(6, 0, true);
+    view.setUint32(8, requestId, true); view.setUint32(12, body.length, true); frame.set(body, 16);
+    view.setUint32(16 + body.length, crc32(frame.subarray(0, 16 + body.length)), true);
+    const encoded = cobsEncode(frame); const delimited = new Uint8Array(encoded.length + 1); delimited.set(encoded);
+    const response = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.rpcPending.delete(requestId); reject(new Error(`Mesh RPC ${method} 超时`)); }, timeout);
+      this.rpcPending.set(requestId, { resolve, reject, timer });
+    });
+    await this.writer.write(delimited);
+    const bytes = await response;
+    if (raw) return bytes;
+    return bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : {};
   }
 
   async execute(command, timeout = 5000) {
@@ -143,7 +234,22 @@ export class UsbTransport {
     this.pump();
     const escapeStart = this.buffer.length;
     await this.write("+++AIRLINK-CLI\r\n");
-    await this.waitForPrompt(escapeStart, 2200, "进入配置终端").catch(() => delay(200));
+    const prompt = await this.waitForPrompt(escapeStart, 900, "进入配置终端").catch(() => null);
+    if (!prompt) {
+      this.binary = true; this.binaryFrame = [];
+      await this.writer.write(new Uint8Array([0]));
+      const [network, root] = await Promise.all([
+        this.rpc(RPC.NETWORK_READ, { include_secret: false }),
+        this.rpc(RPC.CONFIG_READ),
+      ]);
+      const nodes = await this.rpc(RPC.NODE_LIST);
+      this.mesh = { network, nodes: nodes.nodes || [] };
+      const config = root.config || root;
+      const status = { firmware: root.firmware || "0.4.0-dev", serial: root.serial_number || "", fc_seen: false,
+        fc_armed: false, wifi: { mesh: true, nodes: this.mesh.nodes.length, rssi: 0, udp_clients: 0, tcp_clients: 0 }, ota: {} };
+      this.onLog("USB Mesh 二进制管理会话已连接", "success");
+      return { config, status, mesh: this.mesh };
+    }
     const output = await this.execute("config show");
     const config = parseCliConfig(output);
     if (config.route_mode === -1 || config.route_mode === undefined) throw new Error("未识别到 AirLink 配置终端，请按 RESET 后重试");
@@ -194,6 +300,16 @@ export class UsbTransport {
   }
 
   async refresh() {
+    if (this.binary) {
+      const [network, root, nodes] = await Promise.all([
+        this.rpc(RPC.NETWORK_READ, { include_secret: false }), this.rpc(RPC.CONFIG_READ), this.rpc(RPC.NODE_LIST),
+      ]);
+      this.mesh = { network, nodes: nodes.nodes || [] };
+      const config = root.config || root;
+      return { config, mesh: this.mesh, status: { firmware: root.firmware || "0.4.0-dev",
+        serial: root.serial_number || "", fc_seen: false, fc_armed: false,
+        wifi: { mesh: true, nodes: this.mesh.nodes.length, rssi: 0, udp_clients: 0, tcp_clients: 0 }, ota: {} } };
+    }
     const configOutput = await this.execute("config show");
     const statusOutput = await this.execute("status");
     const config = parseCliConfig(configOutput);
@@ -202,7 +318,35 @@ export class UsbTransport {
     return { config, status };
   }
 
+  async meshNetwork(includeSecret = false) { return this.rpc(RPC.NETWORK_READ, { include_secret: includeSecret }); }
+  async meshNodes() { return this.rpc(RPC.NODE_LIST); }
+  async meshApprove(serial, mac) { return this.rpc(RPC.NODE_APPROVE, { serial, mac }); }
+  async meshRemove(serial, mac) { return this.rpc(RPC.NODE_REMOVE, { serial, mac }); }
+  async meshNodeConfig(serial, mac) { return this.rpc(RPC.CONFIG_READ, { serial, mac }); }
+  async meshSaveNodeConfig(serial, mac, config) { return this.rpc(RPC.CONFIG_WRITE, { serial, mac, config }); }
+  async meshRebootNode(serial, mac) { return this.rpc(RPC.REBOOT, { serial, mac }); }
+  async meshCreate() {
+    if (this.binary) return this.rpc(RPC.NETWORK_CREATE, { role: "ground_root" });
+    const result = await this.execute("mesh create ground_root", 8000);
+    const json = result.match(/\{\"schema\":\"airlink-mesh-provision\/v1\"[^\r\n]+\}/)?.[0];
+    if (!json) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Mesh 网络创建失败");
+    return JSON.parse(json);
+  }
+  async meshImport(network, role = "air") {
+    if (this.binary) return this.rpc(RPC.NETWORK_UPDATE, network, { timeout: 20000 });
+    const result = await this.execute(`mesh import ${role} ${JSON.stringify(network)}`, 8000);
+    if (!/OK imported/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Mesh 配网导入失败");
+    return { ok: true, reboot_required: true };
+  }
+  async meshReset() {
+    if (this.binary) return this.rpc(RPC.NETWORK_UPDATE, { reset: true });
+    const result = await this.execute("mesh reset", 8000);
+    if (!/OK mesh configuration reset/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Mesh 重置失败");
+    return { ok: true, reboot_required: true };
+  }
+
   async save(desired, current) {
+    if (this.binary) return this.rpc(RPC.CONFIG_WRITE, desired);
     const operations = configToCliOperations(current, desired);
     if (!operations.length) return { ok: true, reboot_required: false, operations: 0 };
     const begin = await this.execute("config begin");
@@ -225,15 +369,18 @@ export class UsbTransport {
   }
 
   async reboot() {
+    if (this.binary) { await this.rpc(RPC.REBOOT); return; }
     try { await this.execute("reboot", 1800); } catch (error) {
       if (!/未响应/.test(error.message)) throw error;
     }
   }
   async factoryReset() {
+    if (this.binary) throw new Error("Mesh 管理模式请使用本机 CLI 的 mesh reset 恢复命令");
     const result = await this.execute("config reset");
     if (!/OK factory defaults saved/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "恢复出厂失败");
   }
   async validate(desired, current) {
+    if (this.binary) return { valid: true, operations: 1, warnings: {} };
     const operations = configToCliOperations(current, desired);
     return { valid: true, operations: operations.length, warnings: {
       network_disconnect: operations.some((item) => /wifi_|ssid|password/.test(item)),
@@ -247,14 +394,32 @@ export class UsbTransport {
     return JSON.parse(json);
   }
   async diagnostics() {
+    if (this.binary) {
+      const state = await this.refresh();
+      return { status: state.status, mesh: state.mesh, collected_at: new Date().toISOString() };
+    }
     const status = this.parseStatus(await this.execute("status"));
     return { status, clients: { unavailable_over_usb: true }, can: { unavailable_over_usb: true }, collected_at: new Date().toISOString() };
   }
-  async ota(file, onProgress = () => {}) {
+  async ota(file, onProgress = () => {}, metadata = {}) {
     if (!(file instanceof Blob) || file.size <= 0) throw new Error("USB OTA 固件文件无效");
     const bytes = new Uint8Array(await file.arrayBuffer());
     const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
       .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (this.binary) {
+      await this.rpc(RPC.OTA_BEGIN, { size: bytes.length, sha256: digest,
+        version: metadata.version, targets: metadata.targets || [],
+        include_root: metadata.includeRoot !== false });
+      const chunkSize = 1024;
+      try {
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          await this.rpc(RPC.OTA_CHUNK, bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)), { raw: true, timeout: 15000 });
+          onProgress(Math.min(1, (offset + chunkSize) / bytes.length));
+        }
+        await this.rpc(RPC.OTA_COMMIT, {} , { timeout: 45000 });
+        return { ok: true, staged: true };
+      } catch (error) { await this.rpc(RPC.OTA_ABORT).catch(() => {}); throw error; }
+    }
     const ready = await this.execute(`ota begin ${bytes.length} ${digest}`, 8000);
     if (!/OK ota ready/.test(ready)) throw new Error(ready.match(/ERR[^\r\n]*/)?.[0] || "设备不支持 USB 固件升级");
     const completionStart = this.buffer.length;
@@ -275,12 +440,19 @@ export class UsbTransport {
   }
   async disconnect() {
     this.connected = false;
+    if (this.binary && this.writer) {
+      const close = new Uint8Array(20); const view = new DataView(close.buffer);
+      view.setUint8(0, 1); view.setUint8(1, 3); view.setUint32(16, crc32(close.subarray(0, 16)), true);
+      const encoded = cobsEncode(close); const delimited = new Uint8Array(encoded.length + 1); delimited.set(encoded);
+      try { await this.writer.write(delimited); } catch {}
+    }
     try { await this.reader?.cancel(); } catch {}
     try { this.reader?.releaseLock(); } catch {}
     try { this.writer?.releaseLock(); } catch {}
     try { await this.port?.close(); } catch {}
     this.reader = null; this.writer = null; this.port = null;
     this.buffer = "";
+    this.binary = false; this.binaryFrame = [];
   }
 }
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0-dev - 2026-08-28
+
+- Added a fixed-ground-root, routerless ESP-WIFI-MESH transport for up to eight
+  approved airborne nodes and three wireless links; V0.4 is intentionally
+  limited to 2.4 GHz under ESP-IDF 6.0.2.
+- Added independent Mesh configuration, pending transaction and root approval
+  CRC/generation NVS A/B records without changing the V0.3.3 schema-v2 record.
+- Added Mesh protocol v1 with HKDF-SHA256 key separation, AES-256-GCM,
+  per-boot sessions, monotonic sequences and a 64-packet replay window.
+- Added explicit VEHICLE/GCS/INTERNAL router directions, eight dynamic Mesh
+  vehicle endpoint IDs, approval/identity gates and duplicate system-ID
+  isolation.
+- Added the COBS-framed USB management RPC and bilingual WebSerial Mesh node
+  view, plus split OTA verification and boot activation operations.
+- Added all-node armed/unknown/offline safety gates and two-phase Mesh network
+  configuration updates. Existing gateway, bridge, DroneCAN, recovery and
+  factory-test paths remain selected when the Mesh role is off.
+
 ## 0.3.3-dev - 2026-08-28
 
 - Added bidirectional MAVLink byte tunneling over standard

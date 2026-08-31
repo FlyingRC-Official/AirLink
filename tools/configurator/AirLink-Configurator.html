@@ -183,6 +183,19 @@ fieldset:disabled { opacity: .58; }
 .mini-output { min-height: 52px; max-height: 220px; overflow: auto; margin: 14px 0 0; border-radius: 6px; background: #f4f6f7; color: #41515a; padding: 10px; white-space: pre-wrap; font: 11px/1.5 "Cascadia Mono", Consolas, monospace; }
 #otaProgress { display: block; width: 100%; margin: 14px 0 6px; accent-color: var(--orange); }
 #otaState { color: var(--muted); font-size: 12px; }
+.mesh-console { grid-column: 1 / -1; }
+.mesh-summary { padding: 11px 12px; margin-bottom: 12px; border-radius: 6px; background: #f2eefb; color: #5f368f; font: 12px/1.5 "Cascadia Mono", Consolas, monospace; }
+.mesh-node-list { display: grid; gap: 8px; margin-bottom: 13px; }
+.mesh-provision-actions { display: flex; gap: 7px; flex-wrap: wrap; margin: 10px 0; }
+.mesh-provision-actions input { flex: 1 1 220px; }
+.mesh-provision-actions button { border: 1px solid var(--line-strong); border-radius: 5px; background: white; padding: 7px 9px; }
+.mesh-node { display: grid; grid-template-columns: auto minmax(150px, 1.3fr) repeat(6, minmax(70px, .6fr)) auto; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 7px; padding: 10px 11px; font-size: 12px; }
+.mesh-node small { color: var(--muted); display: block; }
+.mesh-node .danger { color: var(--red); font-weight: 700; }
+.mesh-node button { border: 1px solid var(--line-strong); border-radius: 5px; background: white; padding: 6px 8px; }
+.mesh-node-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.mesh-root-target { display: flex; align-items: center; gap: 8px; margin: 10px 0; color: var(--muted); font-size: 13px; }
+.mesh-root-target input, .mesh-node input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--orange); }
 dialog { width: min(760px, calc(100vw - 32px)); border: 0; border-radius: 10px; box-shadow: 0 22px 70px rgba(0,0,0,.3); padding: 0; color: var(--navy); }
 dialog::backdrop { background: rgba(13,29,39,.65); }
 dialog form { padding: 24px; }
@@ -220,6 +233,7 @@ dialog h2 { margin: 0 0 16px; }
   .hero { min-height: 170px; }
   .hero h1 { font-size: 40px; }
   .pair-fields { grid-template-columns: 1fr; }
+  .mesh-node { grid-template-columns: 1fr 1fr; }
 }
 </style>
   </head>
@@ -228,7 +242,7 @@ dialog h2 { margin: 0 0 16px; }
       <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
       <div class="brand-copy">
         <strong>FLYINGRC</strong>
-        <span>AIRLINK CONFIGURATOR · V0.3.3-DEV</span>
+        <span>AIRLINK CONFIGURATOR · V0.4.0-DEV</span>
       </div>
       <button class="header-button" id="languageButton" type="button" aria-label="Switch language">EN</button>
       <div class="connection-pill offline" id="connectionPill"><i></i><span>未连接</span></div>
@@ -387,6 +401,21 @@ dialog h2 { margin: 0 0 16px; }
           <div class="pair-fields"><input id="manifestFile" type="file" accept="application/json,.json" /><input id="firmwareFile" type="file" accept="application/octet-stream,.bin" /></div>
           <div class="tool-actions"><button id="otaGithubButton" type="button" disabled>从 GitHub 升级</button><button id="otaButton" type="button" disabled>使用本地文件升级</button></div>
           <progress id="otaProgress" max="1" value="0"></progress><span id="otaState">等待选择文件</span>
+        </article>
+        <article class="panel tool-card mesh-console" id="meshCard" hidden>
+          <p class="eyebrow">MESH CONTROL</p><h2>Mesh 节点与拓扑</h2>
+          <p>仅通过地面根 USB 管理。机群密钥只在显式导出配网包时返回。</p>
+          <div class="mesh-provision-actions">
+            <input id="meshProvisionFile" type="file" accept="application/json,.json" />
+            <button id="meshCreateButton" type="button">创建地面根网络</button>
+            <button id="meshImportAirButton" type="button">导入为空中节点</button>
+            <button id="meshUpdateButton" type="button">全网更新配网</button>
+            <button id="meshResetButton" type="button">关闭 / 重置 Mesh</button>
+          </div>
+          <div class="mesh-summary" id="meshSummary"></div>
+          <label class="mesh-root-target"><input id="meshIncludeRoot" type="checkbox" checked /> OTA 包含地面根（最后激活）</label>
+          <div class="mesh-node-list" id="meshNodeList"></div>
+          <div class="tool-actions"><button id="meshRefreshButton" type="button">刷新节点</button><button id="meshExportButton" type="button">导出配网包</button></div>
         </article>
       </section>
 
@@ -588,6 +617,47 @@ function evaluateLink(before, after, config = {}) {
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function cobsEncode(input) {
+  const output = new Uint8Array(input.length + Math.ceil(input.length / 254) + 2);
+  let codeIndex = 0; let write = 1; let code = 1;
+  for (const byte of input) {
+    if (byte === 0) { output[codeIndex] = code; codeIndex = write; write += 1; code = 1; }
+    else {
+      output[write] = byte; write += 1; code += 1;
+      if (code === 0xff) { output[codeIndex] = code; codeIndex = write; write += 1; code = 1; }
+    }
+  }
+  output[codeIndex] = code;
+  return output.subarray(0, write);
+}
+
+function cobsDecode(input) {
+  const output = new Uint8Array(input.length); let read = 0; let write = 0;
+  while (read < input.length) {
+    const code = input[read]; read += 1;
+    if (!code || read + code - 1 > input.length) throw new Error("COBS 帧损坏");
+    for (let index = 1; index < code; index += 1) { output[write] = input[read]; write += 1; read += 1; }
+    if (code !== 0xff && read < input.length) { output[write] = 0; write += 1; }
+  }
+  return output.subarray(0, write);
+}
+
+const RPC = Object.freeze({
+  NETWORK_READ: 1, NETWORK_CREATE: 2, NETWORK_UPDATE: 3,
+  NODE_LIST: 16, NODE_APPROVE: 17, NODE_REMOVE: 18, NODE_STATUS: 19,
+  CONFIG_READ: 32, CONFIG_WRITE: 33, REBOOT: 48,
+  OTA_BEGIN: 64, OTA_CHUNK: 65, OTA_COMMIT: 66, OTA_ABORT: 67,
+});
+
 class WifiTransport {
   constructor({ baseUrl, username, password, onLog }) {
     this.baseUrl = /^https?:\/\//i.test(baseUrl) ? baseUrl.replace(/\/$/, "") : `http://${baseUrl.replace(/\/$/, "")}`;
@@ -678,6 +748,10 @@ class UsbTransport {
     this.type = "usb";
     this.buffer = "";
     this.connected = false;
+    this.binary = false;
+    this.binaryFrame = [];
+    this.rpcPending = new Map();
+    this.nextRequestId = 1;
   }
 
   async write(text) {
@@ -691,13 +765,59 @@ class UsbTransport {
       while (this.reader) {
         const { value, done } = await this.reader.read();
         if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        this.buffer += text;
-        this.onRaw(text);
+        if (this.binary) this.consumeBinary(value);
+        else {
+          const text = decoder.decode(value, { stream: true });
+          this.buffer += text;
+          this.onRaw(text);
+        }
       }
     } catch (error) {
       if (this.connected) this.onLog(`USB 读取中断：${error.message}`, "error");
     }
+  }
+
+  consumeBinary(bytes) {
+    for (const byte of bytes) {
+      if (byte !== 0) { this.binaryFrame.push(byte); continue; }
+      if (!this.binaryFrame.length) continue;
+      try {
+        const frame = cobsDecode(Uint8Array.from(this.binaryFrame));
+        this.binaryFrame = [];
+        if (frame.length < 20) throw new Error("RPC 响应过短");
+        const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+        const payloadLength = view.getUint32(12, true);
+        if (view.getUint8(0) !== 1 || view.getUint8(1) !== 2 || frame.length !== 16 + payloadLength + 4) throw new Error("RPC 响应头无效");
+        const expected = view.getUint32(16 + payloadLength, true);
+        if (crc32(frame.subarray(0, 16 + payloadLength)) !== expected) throw new Error("RPC CRC 校验失败");
+        const requestId = view.getUint32(8, true); const pending = this.rpcPending.get(requestId);
+        if (!pending) continue;
+        this.rpcPending.delete(requestId); clearTimeout(pending.timer);
+        const status = view.getUint16(6, true); const payload = frame.subarray(16, 16 + payloadLength);
+        if (status !== 0) pending.reject(new Error(`Mesh RPC ${view.getUint16(2, true)} 失败，错误码 ${status}`));
+        else pending.resolve(payload);
+      } catch (error) { this.onLog(`Mesh RPC 帧错误：${error.message}`, "error"); this.binaryFrame = []; }
+    }
+  }
+
+  async rpc(method, payload = {}, { raw = false, timeout = 8000 } = {}) {
+    if (!this.binary) throw new Error("设备未进入 Mesh 管理会话");
+    const body = raw ? payload : new TextEncoder().encode(JSON.stringify(payload));
+    const requestId = this.nextRequestId++ >>> 0;
+    const frame = new Uint8Array(16 + body.length + 4); const view = new DataView(frame.buffer);
+    view.setUint8(0, 1); view.setUint8(1, 1); view.setUint16(2, method, true);
+    view.setUint16(4, raw ? 1 : 0, true); view.setUint16(6, 0, true);
+    view.setUint32(8, requestId, true); view.setUint32(12, body.length, true); frame.set(body, 16);
+    view.setUint32(16 + body.length, crc32(frame.subarray(0, 16 + body.length)), true);
+    const encoded = cobsEncode(frame); const delimited = new Uint8Array(encoded.length + 1); delimited.set(encoded);
+    const response = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.rpcPending.delete(requestId); reject(new Error(`Mesh RPC ${method} 超时`)); }, timeout);
+      this.rpcPending.set(requestId, { resolve, reject, timer });
+    });
+    await this.writer.write(delimited);
+    const bytes = await response;
+    if (raw) return bytes;
+    return bytes.length ? JSON.parse(new TextDecoder().decode(bytes)) : {};
   }
 
   async execute(command, timeout = 5000) {
@@ -729,7 +849,22 @@ class UsbTransport {
     this.pump();
     const escapeStart = this.buffer.length;
     await this.write("+++AIRLINK-CLI\r\n");
-    await this.waitForPrompt(escapeStart, 2200, "进入配置终端").catch(() => delay(200));
+    const prompt = await this.waitForPrompt(escapeStart, 900, "进入配置终端").catch(() => null);
+    if (!prompt) {
+      this.binary = true; this.binaryFrame = [];
+      await this.writer.write(new Uint8Array([0]));
+      const [network, root] = await Promise.all([
+        this.rpc(RPC.NETWORK_READ, { include_secret: false }),
+        this.rpc(RPC.CONFIG_READ),
+      ]);
+      const nodes = await this.rpc(RPC.NODE_LIST);
+      this.mesh = { network, nodes: nodes.nodes || [] };
+      const config = root.config || root;
+      const status = { firmware: root.firmware || "0.4.0-dev", serial: root.serial_number || "", fc_seen: false,
+        fc_armed: false, wifi: { mesh: true, nodes: this.mesh.nodes.length, rssi: 0, udp_clients: 0, tcp_clients: 0 }, ota: {} };
+      this.onLog("USB Mesh 二进制管理会话已连接", "success");
+      return { config, status, mesh: this.mesh };
+    }
     const output = await this.execute("config show");
     const config = parseCliConfig(output);
     if (config.route_mode === -1 || config.route_mode === undefined) throw new Error("未识别到 AirLink 配置终端，请按 RESET 后重试");
@@ -780,6 +915,16 @@ class UsbTransport {
   }
 
   async refresh() {
+    if (this.binary) {
+      const [network, root, nodes] = await Promise.all([
+        this.rpc(RPC.NETWORK_READ, { include_secret: false }), this.rpc(RPC.CONFIG_READ), this.rpc(RPC.NODE_LIST),
+      ]);
+      this.mesh = { network, nodes: nodes.nodes || [] };
+      const config = root.config || root;
+      return { config, mesh: this.mesh, status: { firmware: root.firmware || "0.4.0-dev",
+        serial: root.serial_number || "", fc_seen: false, fc_armed: false,
+        wifi: { mesh: true, nodes: this.mesh.nodes.length, rssi: 0, udp_clients: 0, tcp_clients: 0 }, ota: {} } };
+    }
     const configOutput = await this.execute("config show");
     const statusOutput = await this.execute("status");
     const config = parseCliConfig(configOutput);
@@ -788,7 +933,35 @@ class UsbTransport {
     return { config, status };
   }
 
+  async meshNetwork(includeSecret = false) { return this.rpc(RPC.NETWORK_READ, { include_secret: includeSecret }); }
+  async meshNodes() { return this.rpc(RPC.NODE_LIST); }
+  async meshApprove(serial, mac) { return this.rpc(RPC.NODE_APPROVE, { serial, mac }); }
+  async meshRemove(serial, mac) { return this.rpc(RPC.NODE_REMOVE, { serial, mac }); }
+  async meshNodeConfig(serial, mac) { return this.rpc(RPC.CONFIG_READ, { serial, mac }); }
+  async meshSaveNodeConfig(serial, mac, config) { return this.rpc(RPC.CONFIG_WRITE, { serial, mac, config }); }
+  async meshRebootNode(serial, mac) { return this.rpc(RPC.REBOOT, { serial, mac }); }
+  async meshCreate() {
+    if (this.binary) return this.rpc(RPC.NETWORK_CREATE, { role: "ground_root" });
+    const result = await this.execute("mesh create ground_root", 8000);
+    const json = result.match(/\{\"schema\":\"airlink-mesh-provision\/v1\"[^\r\n]+\}/)?.[0];
+    if (!json) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Mesh 网络创建失败");
+    return JSON.parse(json);
+  }
+  async meshImport(network, role = "air") {
+    if (this.binary) return this.rpc(RPC.NETWORK_UPDATE, network, { timeout: 20000 });
+    const result = await this.execute(`mesh import ${role} ${JSON.stringify(network)}`, 8000);
+    if (!/OK imported/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Mesh 配网导入失败");
+    return { ok: true, reboot_required: true };
+  }
+  async meshReset() {
+    if (this.binary) return this.rpc(RPC.NETWORK_UPDATE, { reset: true });
+    const result = await this.execute("mesh reset", 8000);
+    if (!/OK mesh configuration reset/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "Mesh 重置失败");
+    return { ok: true, reboot_required: true };
+  }
+
   async save(desired, current) {
+    if (this.binary) return this.rpc(RPC.CONFIG_WRITE, desired);
     const operations = configToCliOperations(current, desired);
     if (!operations.length) return { ok: true, reboot_required: false, operations: 0 };
     const begin = await this.execute("config begin");
@@ -811,15 +984,18 @@ class UsbTransport {
   }
 
   async reboot() {
+    if (this.binary) { await this.rpc(RPC.REBOOT); return; }
     try { await this.execute("reboot", 1800); } catch (error) {
       if (!/未响应/.test(error.message)) throw error;
     }
   }
   async factoryReset() {
+    if (this.binary) throw new Error("Mesh 管理模式请使用本机 CLI 的 mesh reset 恢复命令");
     const result = await this.execute("config reset");
     if (!/OK factory defaults saved/.test(result)) throw new Error(result.match(/ERR[^\r\n]*/)?.[0] || "恢复出厂失败");
   }
   async validate(desired, current) {
+    if (this.binary) return { valid: true, operations: 1, warnings: {} };
     const operations = configToCliOperations(current, desired);
     return { valid: true, operations: operations.length, warnings: {
       network_disconnect: operations.some((item) => /wifi_|ssid|password/.test(item)),
@@ -833,14 +1009,32 @@ class UsbTransport {
     return JSON.parse(json);
   }
   async diagnostics() {
+    if (this.binary) {
+      const state = await this.refresh();
+      return { status: state.status, mesh: state.mesh, collected_at: new Date().toISOString() };
+    }
     const status = this.parseStatus(await this.execute("status"));
     return { status, clients: { unavailable_over_usb: true }, can: { unavailable_over_usb: true }, collected_at: new Date().toISOString() };
   }
-  async ota(file, onProgress = () => {}) {
+  async ota(file, onProgress = () => {}, metadata = {}) {
     if (!(file instanceof Blob) || file.size <= 0) throw new Error("USB OTA 固件文件无效");
     const bytes = new Uint8Array(await file.arrayBuffer());
     const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
       .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (this.binary) {
+      await this.rpc(RPC.OTA_BEGIN, { size: bytes.length, sha256: digest,
+        version: metadata.version, targets: metadata.targets || [],
+        include_root: metadata.includeRoot !== false });
+      const chunkSize = 1024;
+      try {
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          await this.rpc(RPC.OTA_CHUNK, bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length)), { raw: true, timeout: 15000 });
+          onProgress(Math.min(1, (offset + chunkSize) / bytes.length));
+        }
+        await this.rpc(RPC.OTA_COMMIT, {} , { timeout: 45000 });
+        return { ok: true, staged: true };
+      } catch (error) { await this.rpc(RPC.OTA_ABORT).catch(() => {}); throw error; }
+    }
     const ready = await this.execute(`ota begin ${bytes.length} ${digest}`, 8000);
     if (!/OK ota ready/.test(ready)) throw new Error(ready.match(/ERR[^\r\n]*/)?.[0] || "设备不支持 USB 固件升级");
     const completionStart = this.buffer.length;
@@ -861,12 +1055,19 @@ class UsbTransport {
   }
   async disconnect() {
     this.connected = false;
+    if (this.binary && this.writer) {
+      const close = new Uint8Array(20); const view = new DataView(close.buffer);
+      view.setUint8(0, 1); view.setUint8(1, 3); view.setUint32(16, crc32(close.subarray(0, 16)), true);
+      const encoded = cobsEncode(close); const delimited = new Uint8Array(encoded.length + 1); delimited.set(encoded);
+      try { await this.writer.write(delimited); } catch {}
+    }
     try { await this.reader?.cancel(); } catch {}
     try { this.reader?.releaseLock(); } catch {}
     try { this.writer?.releaseLock(); } catch {}
     try { await this.port?.close(); } catch {}
     this.reader = null; this.writer = null; this.port = null;
     this.buffer = "";
+    this.binary = false; this.binaryFrame = [];
   }
 }
 
@@ -927,6 +1128,8 @@ const ui = [
   "wifiScanButton", "exportProfileButton", "importProfileButton", "batchApplyButton", "profileFile", "batchResult", "diagnosticsButton",
   "linkTestButton", "exportDiagnosticsButton", "diagnosticsOutput", "pairSsid", "pairPassword", "pairBand", "pairAirButton", "pairGroundButton",
   "verifyPairButton", "manifestFile", "firmwareFile", "otaGithubButton", "otaButton", "otaProgress", "otaState", "changeDialog", "changeTable", "changeWarnings",
+  "meshCard", "meshSummary", "meshNodeList", "meshRefreshButton", "meshExportButton", "meshIncludeRoot",
+  "meshProvisionFile", "meshCreateButton", "meshImportAirButton", "meshUpdateButton", "meshResetButton",
 ].reduce((result, id) => ({ ...result, [id]: $(id) }), {});
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -937,6 +1140,8 @@ let transport = null;
 let currentConfig = null;
 let currentStatus = null;
 let latestDiagnostics = null;
+const meshOtaTargets = new Set();
+let meshOtaInitialized = false;
 let importedProfile = null;
 let discovered = [];
 let busy = false;
@@ -1022,13 +1227,32 @@ function setConnected(connected) {
   ui.connectionPill.className = `connection-pill ${connected ? "online" : "offline"}`;
   ui.connectionPill.querySelector("span").textContent = connected ? `${transport.type === "usb" ? "USB" : transport.type === "helper" ? "Helper" : "Wi-Fi"} connected` : "未连接";
   ui.disconnectButton.disabled = !connected;
-  ui.configForm.querySelector("fieldset").disabled = !connected;
+  const meshSession = connected && transport?.binary;
+  ui.configForm.querySelector("fieldset").disabled = !connected || meshSession;
   ui.saveState.textContent = connected ? "参数已从模块读取" : "请先连接模块";
   ui.saveDetail.textContent = connected ? "修改后请保存，重启后生效" : "密码不会写入浏览器存储";
   for (const button of [ui.refreshButton, ui.saveButton, ui.saveRebootButton, ui.factoryResetButton, ui.exportProfileButton,
     ui.diagnosticsButton, ui.linkTestButton, ui.pairAirButton, ui.pairGroundButton, ui.verifyPairButton]) button.disabled = !connected;
   ui.otaButton.disabled = !connected;
   ui.otaGithubButton.disabled = !connected;
+  ui.meshCard.hidden = !(connected && transport?.type === "usb");
+  ui.meshUpdateButton.disabled = !meshSession;
+  ui.meshRefreshButton.disabled = !meshSession;
+  ui.meshExportButton.disabled = !meshSession;
+  ui.meshIncludeRoot.disabled = !meshSession;
+  ui.meshCreateButton.disabled = meshSession;
+  ui.meshImportAirButton.disabled = meshSession;
+  ui.meshResetButton.disabled = false;
+  if (connected && transport?.type === "usb" && !meshSession) {
+    ui.meshSummary.textContent = "本机 USB CLI 配网模式；创建或导入后请重启设备";
+    ui.meshNodeList.replaceChildren();
+  }
+  if (meshSession) {
+    for (const button of [ui.saveButton, ui.saveRebootButton, ui.factoryResetButton,
+      ui.pairAirButton, ui.pairGroundButton, ui.verifyPairButton]) button.disabled = true;
+    ui.saveState.textContent = "Mesh 运行参数由节点事务管理";
+    ui.saveDetail.textContent = "网络与节点操作使用 USB 二进制管理会话";
+  }
   ui.exportDiagnosticsButton.disabled = !latestDiagnostics;
   if (!connected) {
     ui.statusGrid.hidden = true; ui.statusEmpty.hidden = false; ui.unsavedBadge.hidden = true;
@@ -1075,11 +1299,70 @@ function updateStatus(status = {}, config = currentConfig || {}) {
   const wifi = status.wifi || {};
   ui.statusFirmware.textContent = status.firmware || "AirLink C5";
   ui.statusFlight.textContent = status.fc_armed ? "已解锁" : status.fc_seen ? "已连接" : "无数据";
-  ui.statusWifi.textContent = Number.isFinite(wifi.rssi) && wifi.rssi !== 0 ? `${wifi.rssi} dBm` : wifi.sta || wifi.ap ? "已启动" : "—";
-  ui.statusClients.textContent = `${wifi.udp_clients || 0} UDP / ${wifi.tcp_clients || 0} TCP`;
+  ui.statusWifi.textContent = wifi.mesh ? "Mesh 已启动" : Number.isFinite(wifi.rssi) && wifi.rssi !== 0 ? `${wifi.rssi} dBm` : wifi.sta || wifi.ap ? "已启动" : "—";
+  ui.statusClients.textContent = wifi.mesh ? `${wifi.nodes || 0} 个 Mesh 节点` : `${wifi.udp_clients || 0} UDP / ${wifi.tcp_clients || 0} TCP`;
   const seconds = Number(status.uptime_s || 0); ui.statusUptime.textContent = seconds ? `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m` : "—";
   ui.statusGeneration.textContent = config.generation !== undefined ? `#${config.generation}` : "—";
   ui.statusEmpty.hidden = true; ui.statusGrid.hidden = false;
+}
+
+function renderMesh(mesh) {
+  if (!mesh || !transport?.binary) return;
+  const network = mesh.network || {}; const nodes = mesh.nodes || [];
+  ui.meshSummary.textContent = `网络 ${network.network_id || "—"} · ${network.country || "CN"} ch${network.channel || "—"} · 2.4 GHz · ${nodes.length}/${network.max_nodes || 8} 节点`;
+  ui.meshNodeList.replaceChildren();
+  if (!nodes.length) {
+    const empty = document.createElement("div"); empty.className = "inline-note"; empty.textContent = "尚未发现机载节点"; ui.meshNodeList.append(empty); return;
+  }
+  for (const node of nodes) {
+    const row = document.createElement("div"); row.className = "mesh-node";
+    const target = document.createElement("input"); target.type = "checkbox";
+    target.disabled = !node.approved || !node.online || node.armed || !node.armed_known;
+    if (!meshOtaInitialized && node.approved) meshOtaTargets.add(node.mac);
+    if (target.disabled) meshOtaTargets.delete(node.mac);
+    target.checked = meshOtaTargets.has(node.mac) && !target.disabled;
+    target.title = "选择为批量 OTA 目标";
+    target.addEventListener("change", () => target.checked ? meshOtaTargets.add(node.mac) : meshOtaTargets.delete(node.mac));
+    row.append(target);
+    const identity = document.createElement("div"); identity.textContent = node.serial || "未知序列号";
+    const mac = document.createElement("small"); mac.textContent = node.mac || "—"; identity.append(mac);
+    const cells = [node.online ? "在线" : "离线", `L${node.layer || "—"} ← ${(node.parent || "root").slice(-8)}`,
+      node.system_id_known ? `SYS ${node.system_id}` : "SYS —",
+      node.armed_known ? node.armed ? "已解锁" : "未解锁" : "状态未知",
+      node.ota_state ? `OTA ${node.ota_progress || 0}%` : "OTA —",
+      node.isolation_reason === 3 ? "SYSTEM ID 冲突" : node.isolation_reason ? `隔离 ${node.isolation_reason}` : "已接入"];
+    row.append(identity);
+    for (const value of cells) { const cell = document.createElement("span"); cell.textContent = value; if (/离线|已解锁|未知|冲突|隔离/.test(value)) cell.className = "danger"; row.append(cell); }
+    const actions = document.createElement("div"); actions.className = "mesh-node-actions";
+    if (node.approved) {
+      const configure = document.createElement("button"); configure.type = "button"; configure.textContent = "配置";
+      configure.addEventListener("click", async () => {
+        try {
+          const current = await transport.meshNodeConfig(node.serial, node.mac);
+          const edited = prompt("编辑节点 schema v2 JSON；保存后节点重启", JSON.stringify(current.config, null, 2));
+          if (edited === null) return;
+          await transport.meshSaveNodeConfig(node.serial, node.mac, JSON.parse(edited));
+          toast("节点配置已保存并重启");
+        } catch (error) { toast(error.message, true); }
+      });
+      const reboot = document.createElement("button"); reboot.type = "button"; reboot.textContent = "重启";
+      reboot.addEventListener("click", async () => {
+        try { await transport.meshRebootNode(node.serial, node.mac); toast("节点正在重启"); }
+        catch (error) { toast(error.message, true); }
+      });
+      actions.append(configure, reboot);
+    }
+    const action = document.createElement("button"); action.type = "button"; action.textContent = node.approved ? "移除" : "批准";
+    action.addEventListener("click", async () => {
+      try {
+        if (node.approved) { await transport.meshRemove(node.serial, node.mac); meshOtaTargets.delete(node.mac); }
+        else { await transport.meshApprove(node.serial, node.mac); meshOtaTargets.add(node.mac); }
+        const refreshed = await transport.refresh(); renderMesh(refreshed.mesh); updateStatus(refreshed.status, refreshed.config);
+      } catch (error) { toast(error.message, true); }
+    });
+    actions.append(action); row.append(actions); ui.meshNodeList.append(row);
+  }
+  meshOtaInitialized = true;
 }
 
 function updateRoleConstraints() {
@@ -1112,7 +1395,7 @@ async function connect(type) {
   try {
     transport = type === "wifi" ? makeWifiTransport() : new UsbTransport({ onLog: log, onRaw: () => {} });
     const result = await transport.connect();
-    applyConfig(result.config); updateStatus(result.status, result.config); setConnected(true); toast("模块连接成功");
+    applyConfig(result.config); updateStatus(result.status, result.config); setConnected(true); renderMesh(result.mesh); toast("模块连接成功");
     if (transport.type !== "usb") refreshTimer = setInterval(refreshStatusOnly, 5000);
   } catch (error) {
     log(error.message, "error"); toast(error.message, true); await transport?.disconnect().catch(() => {}); transport = null; setConnected(false);
@@ -1129,7 +1412,7 @@ async function refresh(showToast = true) {
   if (!transport || busy) return;
   setBusy(true, "正在读取参数…");
   try {
-    const result = await transport.refresh(); applyConfig(result.config); updateStatus(result.status, result.config);
+    const result = await transport.refresh(); applyConfig(result.config); updateStatus(result.status, result.config); renderMesh(result.mesh);
     if (showToast) toast("参数已刷新");
   } catch (error) { log(error.message, "error"); if (showToast) toast(error.message, true); }
   finally { setBusy(false); }
@@ -1324,7 +1607,7 @@ async function sha256(blob) {
 
 async function validateOtaFiles(manifest, firmware) {
   if (manifest.hardware_id !== "airlink-c5-mesh-v1" || manifest.target_chip !== "esp32c5" || manifest.flash_bytes !== 8388608 || manifest.psram_bytes !== 8388608) throw new Error("固件硬件、芯片或 N8R8 容量要求不匹配");
-  if (!/^v?0\.3\.3-dev$/i.test(manifest.version)) throw new Error("固件版本不是 V0.3.3-DEV");
+  if (!/^v?0\.4\.0-dev$/i.test(manifest.version)) throw new Error("固件版本不是 V0.4.0-DEV");
   const digest = await sha256(firmware);
   if (digest !== String(manifest.images?.["airlink.bin"] || "").toLowerCase()) throw new Error("airlink.bin SHA-256 与 manifest 不一致");
   return {
@@ -1332,13 +1615,23 @@ async function validateOtaFiles(manifest, firmware) {
     hardwareId: manifest.hardware_id,
     flashBytes: manifest.flash_bytes,
     psramBytes: manifest.psram_bytes,
+    version: normalizeFirmwareVersion(manifest.version),
   };
 }
 
 async function performOta(manifest, firmware) {
   const metadata = await validateOtaFiles(manifest, firmware);
+  if (transport?.binary) {
+    metadata.targets = [...meshOtaTargets];
+    metadata.includeRoot = ui.meshIncludeRoot.checked;
+    if (!metadata.targets.length && !metadata.includeRoot) throw new Error("至少选择一个 OTA 目标");
+  }
   ui.otaState.textContent = "正在上传…"; ui.otaProgress.value = 0;
   await transport.ota(firmware, (progress) => { ui.otaProgress.value = progress; ui.otaState.textContent = `上传 ${Math.round(progress * 100)}%`; }, metadata);
+  if (transport?.binary && !metadata.includeRoot) {
+    ui.otaState.textContent = "镜像已验证，机载节点正按层级激活";
+    return;
+  }
   ui.otaState.textContent = "模块正在重启并进行健康确认";
   await reconnectAfterReboot(transport, currentConfig, false);
   const expectedVersion = normalizeFirmwareVersion(manifest.version);
@@ -1374,11 +1667,11 @@ async function otaFromGithub() {
   if (!transport || busy) return;
   setBusy(true, "正在读取 GitHub Prerelease…");
   try {
-    const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.3.3-dev";
+    const api = "https://api.github.com/repos/FlyingRC-Official/AirLink/releases/tags/v0.4.0-dev";
     const releaseResponse = await fetch(api, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
     if (!releaseResponse.ok) throw new Error(`GitHub Release HTTP ${releaseResponse.status}`);
     const release = await releaseResponse.json();
-    if (release.draft || !release.prerelease || release.tag_name !== "v0.3.3-dev") throw new Error("GitHub Release 状态或标签不符合 V0.3.3-DEV");
+    if (release.draft || !release.prerelease || release.tag_name !== "v0.4.0-dev") throw new Error("GitHub Release 状态或标签不符合 V0.4.0-DEV");
     const assets = new Map((release.assets || []).map((asset) => [asset.name, asset]));
     const manifestAsset = assets.get("manifest.json"); const firmwareAsset = assets.get("airlink.bin");
     if (!manifestAsset || !firmwareAsset) throw new Error("GitHub Release 缺少 manifest.json 或 airlink.bin");
@@ -1455,6 +1748,37 @@ ui.exportProfileButton.addEventListener("click", () => download(`airlink-profile
 ui.importProfileButton.addEventListener("click", () => ui.profileFile.click()); ui.profileFile.addEventListener("change", () => ui.profileFile.files[0] && importProfileFile(ui.profileFile.files[0]).catch((error) => toast(error.message, true)));
 ui.batchApplyButton.addEventListener("click", batchApply); ui.pairAirButton.addEventListener("click", () => pair(1)); ui.pairGroundButton.addEventListener("click", () => pair(2)); ui.verifyPairButton.addEventListener("click", verifyPair);
 ui.otaGithubButton.addEventListener("click", otaFromGithub); ui.otaButton.addEventListener("click", otaUpdate); ui.languageButton.addEventListener("click", switchLanguage);
+ui.meshRefreshButton.addEventListener("click", () => refresh(false));
+ui.meshExportButton.addEventListener("click", async () => {
+  try { const network = await transport.meshNetwork(true); download(`airlink-mesh-${network.network_id}.json`, JSON.stringify(network, null, 2)); }
+  catch (error) { toast(error.message, true); }
+});
+ui.meshCreateButton.addEventListener("click", async () => {
+  try {
+    const network = await transport.meshCreate();
+    download(`airlink-mesh-${network.network_id}.json`, JSON.stringify(network, null, 2));
+    toast("地面根网络已创建并导出；请重启");
+  } catch (error) { toast(error.message, true); }
+});
+async function selectedMeshProvision() {
+  const file = ui.meshProvisionFile.files[0];
+  if (!file) throw new Error("请先选择 airlink-mesh-provision/v1 JSON");
+  const network = JSON.parse(await file.text());
+  if (network.schema !== "airlink-mesh-provision/v1") throw new Error("配网包 schema 不匹配");
+  return network;
+}
+ui.meshImportAirButton.addEventListener("click", async () => {
+  try { await transport.meshImport(await selectedMeshProvision(), "air"); toast("已导入为空中节点；请重启"); }
+  catch (error) { toast(error.message, true); }
+});
+ui.meshUpdateButton.addEventListener("click", async () => {
+  try { await transport.meshImport(await selectedMeshProvision(), "ground_root"); toast("全网配置已提交，设备将重启"); }
+  catch (error) { toast(error.message, true); }
+});
+ui.meshResetButton.addEventListener("click", async () => {
+  try { await transport.meshReset(); toast("Mesh 已重置；请重启"); }
+  catch (error) { toast(error.message, true); }
+});
 ui.ledBrightness.addEventListener("input", () => { ui.brightnessOutput.value = `${ui.ledBrightness.value}%`; });
 ui.fcTransport.addEventListener("change", updateRoleConstraints);
 ui.configForm.addEventListener("input", () => { if (transport) { ui.unsavedBadge.hidden = false; ui.saveState.textContent = "有未保存的更改"; } });

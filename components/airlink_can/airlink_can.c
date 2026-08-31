@@ -529,6 +529,7 @@ esp_err_t airlink_can_start(const airlink_can_options_t *options)
         const airlink_router_endpoint_t endpoint = {
             .id = AIRLINK_ENDPOINT_ID_FC_CAN,
             .type = AIRLINK_ENDPOINT_CAN,
+            .direction = AIRLINK_ENDPOINT_DIRECTION_VEHICLE,
             .send = can_router_send,
             .name = "flight-controller-dronecan",
         };

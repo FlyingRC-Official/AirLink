@@ -4,9 +4,22 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { configDiff, configToCliOperations, createProfile, evaluateLink, normalizeFirmwareVersion, parseCliConfig, parseProfile, redactDiagnostics, validateConfig } from "../public/js/config-model.js";
-import { UsbTransport } from "../public/js/transports.js";
+import { cobsDecode, cobsEncode, crc32, UsbTransport } from "../public/js/transports.js";
 
 const root = new URL("../", import.meta.url);
+
+test("uses the repository V0.4 version source consistently", async () => {
+  const repository = fileURLToPath(new URL("../../../", import.meta.url));
+  const version = (await readFile(join(repository, "version.txt"), "utf8")).trim();
+  const configurator = JSON.parse(await readFile(join(repository, "tools", "configurator", "package.json"), "utf8"));
+  const flasher = JSON.parse(await readFile(join(repository, "tools", "usb_flasher", "package.json"), "utf8"));
+  const releaseSource = await readFile(join(repository, "tools", "usb_flasher", "src", "release-firmware.js"), "utf8");
+  assert.equal(version, "0.4.0-dev");
+  assert.equal(configurator.version, version);
+  assert.equal(flasher.version, version);
+  assert.match(releaseSource, new RegExp(`version: "${version.replaceAll(".", "\\.")}"`));
+  assert.match(releaseSource, new RegExp(`tag: "v${version.replaceAll(".", "\\.")}"`));
+});
 
 test("parses firmware config show output", () => {
   const parsed = parseCliConfig("OK config generation=7\r\nroute_mode=mavlink\r\nfc_transport=dronecan\r\nuart_baud=115200\r\nwifi_mode=apsta\r\nwifi_band=2g\r\nap_ssid=FlyingRC-AirLink-1234\r\nusb_mode=log\r\nbridge_role=off\r\ncan_node_id=125\r\ncan_remote_node_id=10\r\ncan_serial_id=0\r\n> ");
@@ -19,10 +32,16 @@ test("parses firmware config show output", () => {
 });
 
 test("normalizes OTA versions and reads the USB firmware version", () => {
-  assert.equal(normalizeFirmwareVersion("v0.3.3-DEV"), "0.3.3-dev");
-  assert.equal(normalizeFirmwareVersion("0.3.3-dev"), "0.3.3-dev");
+  assert.equal(normalizeFirmwareVersion("v0.4.0-DEV"), "0.4.0-dev");
+  assert.equal(normalizeFirmwareVersion("0.4.0-dev"), "0.4.0-dev");
   const transport = new UsbTransport({ onLog() {}, onRaw() {} });
   assert.equal(transport.parseStatus("OK status\r\nfirmware=0.3.3-dev\r\nfc_seen=0\r\n> ").firmware, "0.3.3-dev");
+});
+
+test("encodes COBS RPC frames and CRC32 deterministically", () => {
+  const input = Uint8Array.from([1, 0, 2, 3, 0, 0, 4]);
+  assert.deepEqual([...cobsDecode(cobsEncode(input))], [...input]);
+  assert.equal(crc32(new TextEncoder().encode("123456789")), 0xcbf43926);
 });
 
 test("orders USB role transitions safely", () => {
@@ -127,7 +146,7 @@ test("builds a portable single-file configurator", async () => {
   assert.match(bundle, /airlink-config-profile\/v1/);
   assert.match(bundle, /helper\/v1\/devices/);
   assert.match(bundle, /wifi_scan|wifiScan/);
-  assert.match(bundle, /V0\.3\.3-DEV/);
+  assert.match(bundle, /V0\.4\.0-DEV/);
   assert.match(bundle, /Update from GitHub/);
   assert.match(bundle, /Export redacted report/);
   assert.match(bundle, /Confirm changes before saving/);

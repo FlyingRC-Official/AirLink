@@ -140,6 +140,7 @@ ota, main = (Path(path).read_text() for path in sys.argv[1:])
 assert 'atomic_exchange(&s_services_ready, ready)' in ota
 assert 'confirm_err = esp_ota_mark_app_valid_cancel_rollback()' in ota
 assert 'rollback_err = esp_ota_mark_app_invalid_rollback_and_reboot()' in ota
+assert 'strcmp(descriptor.version, s_stream.expected_version)' in ota
 assert 'airlink_ota_health_heartbeat(true)' not in main
 assert 'services_healthy(&wifi)' in main
 PY
@@ -155,9 +156,10 @@ from pathlib import Path
 import sys
 
 router, wifi, usb, main = (Path(path).read_text() for path in sys.argv[1:])
-assert 'type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_CAN ||' in router
-assert 'type == AIRLINK_ENDPOINT_BRIDGE' in router
+assert 'slot->endpoint.direction == AIRLINK_ENDPOINT_DIRECTION_VEHICLE' in router
+assert 'AIRLINK_ENDPOINT_DIRECTION_INTERNAL' in router
 assert '.type = AIRLINK_ENDPOINT_BRIDGE' in wifi
+assert '.direction = AIRLINK_ENDPOINT_DIRECTION_VEHICLE' in wifi
 assert 'bridge_connect()' in wifi
 assert 'replacing stale TCP client from reconnecting station' in wifi
 assert '#define NET_PACKET_QUEUE 256' in wifi
@@ -200,11 +202,52 @@ assert 'usb download' in usb
 assert 'USB_DOWNLOAD_WINDOW_US' in usb
 assert 'usb_queue_drops=' in usb
 assert 'config->bridge_role = AIRLINK_BRIDGE_GROUND' in usb
-assert 'hardware_ok && !recovery && !ground_bridge' in main
+assert 'hardware_ok && !recovery &&' in main
+assert 'mesh_air || (!mesh_ground && !ground_bridge && !can_fc)' in main
 assert 'airlink_usb_reset_guard_enable();' in main
 assert 'ESP_ERROR_CHECK(airlink_usb_start' not in main
 assert 'airlink_ota_health_heartbeat(healthy);' in main
 assert 'airlink_diag_mark_boot_stage("healthy")' in main
+PY
+
+# V0.4 Mesh must remain separate from schema-v2 configuration and must use
+# application-layer authenticated encryption because MESH_DATA_ENC is not an
+# implemented ESP-IDF service.
+python3 - \
+  "$root/components/airlink_mesh/airlink_mesh_config.c" \
+  "$root/components/airlink_mesh/airlink_mesh_codec.c" \
+  "$root/components/airlink_mesh/airlink_mesh.c" \
+  "$root/main/app_main.c" <<'PY'
+from pathlib import Path
+import sys
+
+config, codec, mesh, main = (Path(path).read_text() for path in sys.argv[1:])
+for marker in [
+    'mesh_a', 'mesh_b', 'pending_a', 'pending_b', 'allow_a', 'allow_b',
+    'AIRLINK_MESH_BAND_2G', 'AIRLINK_MESH_BAND_5G_RESERVED',
+    'airlink_mesh_channel_allowed', 'airlink-mesh-provision/v1',
+]:
+    assert marker in config, f'missing Mesh persistence guard: {marker}'
+for marker in [
+    'PSA_ALG_HKDF(PSA_ALG_SHA_256)', 'psa_aead_encrypt', 'psa_aead_decrypt',
+    'AIRLINK_MESH_SESSION_ID_SIZE', 'seen_bitmap', 'UINT64_MAX',
+]:
+    assert marker in codec, f'missing Mesh crypto guard: {marker}'
+for marker in [
+    'psa_crypto_init()', 'esp_wifi_set_mode(WIFI_MODE_STA)',
+    'esp_mesh_fix_root(true)', 'MESH_ROOT', 'MESH_TOPO_TREE',
+    'esp_mesh_set_capacity_num', 'WIFI_BAND_MODE_2G_ONLY', 'MESH_OPT_SEND_GROUP',
+    'cfg.router.allow_router_switch = false',
+    'AIRLINK_MESH_ISOLATION_DUPLICATE_SYSTEM_ID',
+    'OTA_WINDOW_CHUNKS 32U', 'OTA_CHUNK_SIZE 1024U',
+    'ota_ack_bitmap', 'root_ota_activation_task',
+    'airlink_mesh_update_network', 'CONFIG_PHASE_PREPARE',
+    'MESH_HIGH_QUEUE_DEPTH', 'MESH_NORMAL_QUEUE_DEPTH',
+]:
+    assert marker in mesh, f'missing Mesh runtime guard: {marker}'
+assert 'airlink_mesh_config_init(&mesh_snapshot)' in main
+assert 'configured_mesh ? AIRLINK_ROUTE_MAVLINK' in main
+assert 'airlink_mesh_start(&mesh_snapshot.value' in main
 PY
 
 # DroneCAN tunneling must stay non-blocking, retain independent priorities, and

@@ -158,7 +158,7 @@ app.innerHTML = `
           </div>
 
           <button class="button flash-button" id="flashButton" type="button" disabled>
-            安全烧录 AirLink V0.3.3-DEV
+            安全烧录 AirLink V0.4.0-DEV
           </button>
           <p class="microcopy centered">预计约 1–3 分钟。写入完成前不要关闭网页、拔出 USB 或按 RESET。</p>
 

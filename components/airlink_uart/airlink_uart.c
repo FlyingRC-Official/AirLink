@@ -140,6 +140,7 @@ esp_err_t airlink_uart_start(uint32_t baud)
     const airlink_router_endpoint_t endpoint = {
         .id = AIRLINK_ENDPOINT_ID_FC_UART,
         .type = AIRLINK_ENDPOINT_UART,
+        .direction = AIRLINK_ENDPOINT_DIRECTION_VEHICLE,
         .send = uart_router_send,
         .name = "flight-controller-uart",
     };

@@ -1,9 +1,9 @@
 # FlyingRC AirLink C5 Mesh V1
 
 AirLink is an ESP32-C5 telemetry gateway for ArduPilot-compatible flight
-controllers. It routes MAVLink 1/2 between a flight-controller UART or standard
-DroneCAN serial tunnel and Wi-Fi UDP/TCP clients, with a web configuration UI,
-USB recovery, rollback-capable OTA and active DroneCAN diagnostics.
+controllers. V0.4 adds a routerless, fixed-root ESP-WIFI-MESH transport for one
+ground unit and up to eight airborne UART MAVLink nodes while preserving the
+V0.3.3 Wi-Fi gateway/bridge and DroneCAN modes.
 The bilingual single-file UI is deterministically gzip-compressed and embedded
 in the application image.
 
@@ -16,6 +16,7 @@ flowchart LR
     Router <--> UDP["Wi-Fi UDP 14550"]
     Router <--> TCP["Wi-Fi TCP 5760"]
     Router <--> USB["USB MAVLink mode"]
+    Router <--> Mesh["Encrypted ESP-WIFI-MESH"]
     Air["Air role: UART + AP"] <--> Ground["Ground role: STA + USB"]
     CAN["DroneCAN node/service"] --> Diagnostics["Status and diagnostics"]
     Router --> Diagnostics
@@ -25,6 +26,16 @@ flowchart LR
 ```
 
 ### Core functions
+
+- Runs a 2.4 GHz-only ESP-WIFI-MESH with one fixed ground root, at most eight
+  approved airborne nodes and at most three wireless links (ESP-MESH layer 4).
+  Airborne nodes never elect themselves root. Every application packet uses
+  HKDF-SHA256 separated AES-256-GCM keys and a 64-packet replay window.
+- Keeps Mesh configuration and the root approval list in independent
+  CRC/generation NVS A/B records, leaving the V0.3.3 schema-v2 record unchanged.
+- Exposes Mesh provisioning, approval, topology, two-phase network updates and
+  staged OTA through the local USB WebSerial management session. Mesh SoftAP is
+  not a general-purpose browser access point.
 
 - Routes MAVLink 1/2 between the flight-controller UART and Wi-Fi or optional
   USB ground-station endpoints. MAVLink-aware and transparent routing modes are
@@ -117,11 +128,11 @@ BOOT while powering or resetting the board, then run `idf.py -p PORT flash`.
 
 ### Local USB flasher
 
-The `v0.3.3-dev` release includes a single-file local Web Serial flasher for
-Windows and macOS. Extract `AirLink-USB-Flasher-v0.3.3-dev.zip`, then run
+The `v0.4.0-dev` release includes a single-file local Web Serial flasher for
+Windows and macOS. Extract `AirLink-USB-Flasher-v0.4.0-dev.zip`, then run
 `start_flasher.bat` on Windows or `start_flasher.command` on macOS. Chrome or
 Edge is required; Safari is not supported. The page downloads only the fixed
-`v0.3.3-dev` firmware from the matching GitHub tag and accepts it only when the
+`v0.4.0-dev` firmware from the matching GitHub tag and accepts it only when the
 manifest SHA-256 and GitHub Release digest both match.
 
 The flasher never performs a whole-chip erase and never writes normal NVS or
@@ -144,6 +155,11 @@ Run `start_configurator.bat` on Windows or `start_configurator.command` on
 macOS. No local server or Node.js installation is required. Chrome or Edge is
 required. Credentials and device data stay in local memory and are not stored
 in browser storage.
+
+On a Mesh ground root, sending `+++AIRLINK-CLI\r\n` enters the COBS-framed
+binary management session and temporarily pauses the USB MAVLink endpoint. A
+close frame, serial disconnect, 60-second idle timeout or reboot restores USB
+MAVLink. See [Mesh operation and recovery](docs/MESH.md).
 
 For discovery, batch deployment and proxy access to older firmware, run the
 optional native helper package. It embeds the same HTML, binds only to

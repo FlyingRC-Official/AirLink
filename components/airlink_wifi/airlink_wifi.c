@@ -237,6 +237,7 @@ static bool bridge_connect(void)
     const airlink_router_endpoint_t endpoint = {
         .id = AIRLINK_ENDPOINT_ID_BRIDGE,
         .type = AIRLINK_ENDPOINT_BRIDGE,
+        .direction = AIRLINK_ENDPOINT_DIRECTION_VEHICLE,
         .send = bridge_send,
         .name = "airlink-bridge",
     };
@@ -339,6 +340,7 @@ static udp_client_t *register_udp(const struct sockaddr_in *address)
         };
         const airlink_router_endpoint_t endpoint = {
             .id = client->endpoint_id, .type = AIRLINK_ENDPOINT_UDP,
+            .direction = AIRLINK_ENDPOINT_DIRECTION_GCS,
             .send = udp_send, .context = client, .name = "udp-client",
         };
         if (airlink_router_register(&endpoint) != ESP_OK) { client->used = false; return NULL; }
@@ -421,6 +423,7 @@ static void accept_tcp(void)
         }
         const airlink_router_endpoint_t endpoint = {
             .id = client->endpoint_id, .type = AIRLINK_ENDPOINT_TCP,
+            .direction = AIRLINK_ENDPOINT_DIRECTION_GCS,
             .send = tcp_send, .context = client, .name = "tcp-client",
         };
         if (airlink_router_register(&endpoint) != ESP_OK) { close_tcp(client); return; }
@@ -469,6 +472,7 @@ static esp_err_t open_sockets(void)
 
     const airlink_router_endpoint_t broadcast = {
         .id = AIRLINK_ENDPOINT_ID_UDP_BASE - 1U, .type = AIRLINK_ENDPOINT_UDP,
+        .direction = AIRLINK_ENDPOINT_DIRECTION_GCS,
         .send = udp_broadcast_send, .name = "udp-ap-broadcast",
     };
     const esp_err_t err = airlink_router_register(&broadcast);

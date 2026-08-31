@@ -365,7 +365,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--air-port")
     parser.add_argument("--ground-port")
-    parser.add_argument("--expected-version", default="0.3.3-dev")
+    parser.add_argument("--expected-version", default="0.4.0-dev")
     parser.add_argument("--pair", action="store_true", help="atomically copy air AP credentials to ground STA")
     parser.add_argument("--settle", type=float, default=10.0)
     parser.add_argument("--ready-timeout", type=float, default=45.0,

@@ -1,5 +1,27 @@
 # Bench and flight acceptance
 
+## V0.4 Mesh gate
+
+- Build release, recovery and factory-test with ESP-IDF 6.0.2; run C host,
+  configurator Node, helper Go and release-package checks. Confirm a V0.3.3
+  downgrade still reads the unchanged schema-v2 configuration.
+- With one root and eight distinct MAVLink system IDs, exercise direct,
+  two-link and three-link paths, parent reselection, relay power loss, node
+  restart, channel interference and root loss/restoration. No air node may
+  become root.
+- Run simultaneous parameter reads, mission uploads, commands, heartbeat and
+  telemetry. A duplicate system ID must isolate the later node and must not
+  silently transfer control ownership.
+- Exercise OTA with 1/4/8 targets, 32-chunk windows, random loss, repair,
+  browser disconnect, invalid images, write failures, lost nodes, arming during
+  transfer, leaf-to-root activation and forced rollback. Before all targets
+  verify, no target may select the staged boot partition.
+- Require command RTT P95 <= 200 ms, valid MAVLink loss < 0.5%, non-root path
+  reorganization <= 10 s, initial formation <= 60 s and a 24-hour full-load
+  run without unexpected reset or persistent free-heap decline.
+- After bench acceptance, perform incremental low-risk 2/4/8-aircraft flight
+  validation. A software build alone is not RF or flight acceptance.
+
 ## Bench gate
 
 - Run PRBS loopback for 10 minutes at each supported UART baud; zero errors.

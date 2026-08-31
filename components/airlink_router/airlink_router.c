@@ -98,10 +98,9 @@ static bool duplicate_network_frame(const uint8_t *data, size_t length)
     return false;
 }
 
-static bool vehicle_side(airlink_endpoint_type_t type)
+static bool vehicle_side(const endpoint_slot_t *slot)
 {
-    return type == AIRLINK_ENDPOINT_UART || type == AIRLINK_ENDPOINT_CAN ||
-           type == AIRLINK_ENDPOINT_BRIDGE;
+    return slot->endpoint.direction == AIRLINK_ENDPOINT_DIRECTION_VEHICLE;
 }
 
 static uint32_t add_u32_saturated(uint32_t value, uint32_t increment)
@@ -117,7 +116,7 @@ static uint64_t add_u64_saturated(uint64_t value, size_t increment)
 static void observe_vehicle_frame(const endpoint_slot_t *source,
                                   const airlink_mavlink_frame_t *frame)
 {
-    if (!vehicle_side(source->endpoint.type)) return;
+    if (!vehicle_side(source)) return;
     atomic_store(&s_fc_last_seen_us, esp_timer_get_time());
     if (!airlink_mavlink_heartbeat_is_autopilot(frame)) return;
     if (!s_fc_identity_known) {
@@ -137,7 +136,7 @@ static void observe_vehicle_frame(const endpoint_slot_t *source,
 static void observe_vehicle_safety(endpoint_slot_t *source,
                                    const uint8_t *data, size_t length)
 {
-    if (!vehicle_side(source->endpoint.type)) return;
+    if (!vehicle_side(source)) return;
     for (size_t i = 0; i < length; ++i) {
         airlink_mavlink_frame_t frame;
         if (!airlink_mavlink_parse_byte(&source->parser, data[i], &frame)) continue;
@@ -153,8 +152,10 @@ static void route(const endpoint_slot_t *source, const uint8_t *data, size_t len
     for (size_t i = 0; i < MAX_ENDPOINTS; ++i) {
         endpoint_slot_t *destination = &s_endpoints[i];
         if (!destination->used || destination == source) continue;
-        const bool from_vehicle = vehicle_side(source->endpoint.type);
-        const bool to_vehicle = vehicle_side(destination->endpoint.type);
+        if (source->endpoint.direction == AIRLINK_ENDPOINT_DIRECTION_INTERNAL ||
+            destination->endpoint.direction == AIRLINK_ENDPOINT_DIRECTION_INTERNAL) continue;
+        const bool from_vehicle = vehicle_side(source);
+        const bool to_vehicle = vehicle_side(destination);
         if (from_vehicle == to_vehicle) continue;
         const esp_err_t err = destination->endpoint.send(data, length, high_priority,
                                                           destination->endpoint.context);
@@ -201,7 +202,7 @@ esp_err_t airlink_router_ingest(uint8_t endpoint_id, const uint8_t *data, size_t
             source->stats.parse_errors = add_u32_saturated(source->stats.parse_errors, 1U);
             continue;
         }
-        if (vehicle_side(source->endpoint.type)) {
+        if (vehicle_side(source)) {
             observe_vehicle_frame(source, &frame);
         } else if (duplicate_network_frame(frame.bytes, frame.length)) {
             continue;
@@ -233,6 +234,13 @@ bool airlink_router_fc_seen(void)
  * that the aircraft disarmed.  Keep destructive operations locked until a
  * valid disarmed heartbeat is received or the AirLink itself is restarted. */
 bool airlink_router_fc_armed(void) { return atomic_load(&s_fc_armed); }
+
+bool airlink_router_fc_system_id(uint8_t *system_id)
+{
+    if (system_id == NULL || !s_fc_identity_known) return false;
+    *system_id = s_fc_system_id;
+    return true;
+}
 
 void airlink_router_get_stats(uint8_t endpoint_id, airlink_endpoint_stats_t *stats)
 {

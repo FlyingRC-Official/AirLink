@@ -1,5 +1,15 @@
 # Recovery procedure
 
+## Mesh recovery
+
+Mesh nodes do not elect a replacement root. After a root outage, restore the
+configured ground root and wait up to 60 seconds for nodes to rejoin. If a node
+cannot rejoin after a fleet key, channel or country change, attach USB locally
+and use `mesh import <provision-json>`; use `mesh reset` to return that device
+to Mesh-off mode. Neither operation rewrites the V0.3.3 schema-v2 configuration.
+
+## Firmware recovery
+
 1. Remove propellers and disconnect every 5V source except the USB connection
    used for recovery.
 2. If the application still accepts USB CLI commands, enter CLI with
