@@ -346,6 +346,11 @@ esp_err_t airlink_mesh_config_import_json(const char *json,
     const cJSON *country = cJSON_GetObjectItemCaseSensitive(root, "country");
     const cJSON *max_nodes = cJSON_GetObjectItemCaseSensitive(root, "max_nodes");
     const cJSON *max_hops = cJSON_GetObjectItemCaseSensitive(root, "max_hops");
+    if (cJSON_IsString(band) && strcmp(band->valuestring, "5g") == 0) {
+        config->band = AIRLINK_MESH_BAND_5G_RESERVED;
+        cJSON_Delete(root);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     bool ok = cJSON_IsString(schema) && strcmp(schema->valuestring, "airlink-mesh-provision/v1") == 0 &&
               cJSON_IsString(id) && parse_hex_id(id->valuestring, config->network_id) &&
               cJSON_IsString(key) && cJSON_IsString(band) && strcmp(band->valuestring, "2g") == 0 &&
